@@ -145,5 +145,26 @@ vite.config.ts.timestamp-*
 # Astro generated types
 .astro/
 
+# Local databases and runtime data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+data/
+
+# Certificates and private keys
+*.pem
+*.key
+*.crt
+certs/
+
+# Build output and TypeScript caches
+dist/
+*.tsbuildinfo
+
+# Environment files (keep the example template)
+.env.*
+!.env.example
+
 # Turbo Repo
 .turbo
