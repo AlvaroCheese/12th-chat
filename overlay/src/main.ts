@@ -1,7 +1,7 @@
 import { createScene } from "./render/scene.js";
 import { connectToServer } from "./net/socket.js";
 import { startMockMode } from "./mock/index.js";
-import { getStandState, setStandState, subscribeToStandState } from "./state/index.js";
+import { setStandState, subscribeToStandState } from "./state/index.js";
 
 const appElement = document.querySelector<HTMLElement>("#app");
 
@@ -10,14 +10,13 @@ if (!appElement) {
 }
 
 async function startOverlay(host: HTMLElement): Promise<void> {
-  const renderer = await createScene(host);
+  const query = new URLSearchParams(window.location.search);
+  const renderer = await createScene(host, query.get("mute") === "1");
   subscribeToStandState((state) => renderer.update(state));
-  renderer.update(getStandState());
-
-  if (new URLSearchParams(window.location.search).get("mock") === "1") {
-    startMockMode(setStandState);
+  if (query.get("mock") === "1") {
+    startMockMode(setStandState, (chant) => renderer.playChant(chant));
   } else {
-    connectToServer(setStandState);
+    connectToServer(setStandState, (chant) => renderer.playChant(chant));
   }
 }
 

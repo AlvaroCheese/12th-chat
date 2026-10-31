@@ -40,13 +40,27 @@ OAuth tokens are stored locally under `data/` and refreshed automatically. Keep 
 
 ## Mock mode
 
-Set `MOCK_CHAT=1` in `.env` and run `npm run dev:server`. Fake messages from several users on two sides, repeated chants, and moderator badges appear in the server console without a Twitch connection. Set `MOCK_CHAT=0` to use Twitch.
+Set `MOCK_CHAT=1` in `.env` and run `npm run dev:server`. The mock generates 500 initial joiners, ongoing arrivals, departures, side switches, isolated messages, coordinated chants, and a blocked example without Twitch. Set `MOCK_CHAT=0` to use Twitch.
 
 ## Run the overlay
 
-Run `npm run dev:overlay` in a separate terminal and open the Vite URL shown. In the connected overlay, type `!join argentina` or `!join mexico` in chat. The command accepts either side ID or display name, regardless of capitalization; joining the other side switches that user over.
+Run `npm run dev:overlay` in a separate terminal and open the Vite URL shown. In the connected overlay, type `!join argentina` or `!join mexico` in chat. The command accepts either side ID or display name, regardless of capitalization; joining the other side switches that user over. Type `!leave` to leave the stand.
 
-For a server-driven mock stand, set `MOCK_CHAT=1` and run `npm run dev:server`; 500 fake users join both sides automatically. For an overlay-only mock without the server, append `?mock=1` to the Vite URL.
+Fans leave after 120 seconds without a chat message (30 seconds in server mock mode). Empty seats are reused without moving other fans. Server mock snapshots include stable seats and animate arrivals and departures.
+
+## Chants
+
+Five distinct joined viewers from the same side must send the same chant within 8 seconds in live mode. Chants are normalized before comparison, so `VAMOOOS!!` and `vamos` match. A side/text pair has a 10-second cooldown and singing lasts 6 seconds; ongoing messages can extend it. Mock mode uses 3 users, a 4-second window and cooldown, and a 5-second duration. Thresholds are in [server/src/config/chants.ts](./server/src/config/chants.ts).
+
+Chant text is filtered before delivery: URLs are stripped, text over 60 characters and repeated symbol spam are rejected, and phrases in [server/src/chat/blocklist.json](./server/src/chat/blocklist.json) are blocked. Add normalized phrases to that JSON file to extend the blocklist. AI moderation is a future hook and is not active yet.
+
+The overlay uses procedural crowd noise. Add `?mute=1` to disable it. In OBS, you can also control the browser source audio in the source's audio settings.
+
+## Test chants and stand life
+
+- **Server mock:** set `MOCK_CHAT=1`, run `npm run dev:server`, then `npm run dev:overlay` in another terminal. Open the Vite URL without `?mock=1`. Watch for coordinated chants, filtered text, user churn, reused seats, and changing counters.
+- **Overlay-only mock:** open the Vite URL with `?mock=1` to simulate joins, leaves, switches, chants, and banners locally. Add `&mute=1` to silence procedural audio.
+- **Twitch:** connect the streamer, type `!join argentina` or `!join mexico`, coordinate the same chant across at least five distinct joined viewers, then use `!leave` or wait 120 seconds without chat activity.
 
 ## Features and milestones
 

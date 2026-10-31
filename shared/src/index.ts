@@ -7,6 +7,7 @@ export interface Fan {
   userId: string;
   userName: string;
   side: Side;
+  seat: number;
 }
 
 export interface RecentJoin {
@@ -35,10 +36,26 @@ export interface StandState {
   fans: Fan[];
   overflowCounts: Record<Side, number>;
   recentJoins: RecentJoin[];
+  joinedIds: string[];
+  leftIds: string[];
+  singing: Record<Side, SingingState | null>;
+}
+
+export interface SingingState {
+  text: string;
+  intensity: number;
+  endsAt: number;
+}
+
+export interface ChantEvent {
+  side: Side;
+  text: string;
+  intensity: number;
+  durationMs: number;
 }
 
 export type ServerToOverlayMessage =
   | { type: "stand:update"; state: StandState }
-  | { type: "chant"; side: Side; text: string }
+  | { type: "chant"; chant: ChantEvent }
   | { type: "goal"; side: Side }
   | { type: "match:end"; report: string };

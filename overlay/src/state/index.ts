@@ -7,6 +7,9 @@ let currentState: StandState = {
   fans: [],
   overflowCounts: { ...emptyCounts },
   recentJoins: [],
+  joinedIds: [],
+  leftIds: [],
+  singing: { argentina: null, mexico: null },
 };
 
 const subscribers = new Set<(state: StandState) => void>();

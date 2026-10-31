@@ -7,6 +7,7 @@ const SNAPSHOT_INTERVAL_MS = 250;
 export class StandAggregator {
   private lastSerializedSnapshot = "";
   private timer: NodeJS.Timeout | undefined;
+  private readonly baselineSocketIds = new Set<string>();
 
   constructor(
     private readonly io: Server,
@@ -26,19 +27,37 @@ export class StandAggregator {
   }
 
   sendTo(socket: Socket): void {
-    const snapshot = this.store.createSnapshot();
+    const now = Date.now();
+    this.store.expireInactive(now);
+    this.store.expireSinging(now);
+    const snapshot = this.store.createSnapshot(now, false);
     this.onSnapshot?.(snapshot);
     socket.emit("stand:update", snapshot);
+    this.baselineSocketIds.add(socket.id);
+  }
+
+  removeSocket(socket: Socket): void {
+    this.baselineSocketIds.delete(socket.id);
   }
 
   private publishIfChanged(): void {
-    const snapshot: StandState = this.store.createSnapshot();
+    const now = Date.now();
+    this.store.expireInactive(now);
+    this.store.expireSinging(now);
+    const snapshot: StandState = this.store.createSnapshot(now);
     const serialized = JSON.stringify(snapshot);
     if (serialized === this.lastSerializedSnapshot) return;
 
     this.lastSerializedSnapshot = serialized;
     this.onSnapshot?.(snapshot);
-    this.io.emit("stand:update", snapshot);
+    for (const socket of this.io.sockets.sockets.values()) {
+      const payload = this.baselineSocketIds.has(socket.id)
+        ? { ...snapshot, joinedIds: [], leftIds: [] }
+        : snapshot;
+      socket.emit("stand:update", payload);
+      this.baselineSocketIds.delete(socket.id);
+    }
+    this.store.acknowledgeSnapshot();
   }
 }
 

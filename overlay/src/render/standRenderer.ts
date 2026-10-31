@@ -1,22 +1,58 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { SIDES, type Fan, type Side, type StandState } from "@twitch-graderia/shared";
+import { SIDES, type ChantEvent, type Fan, type Side, type StandState } from "@twitch-graderia/shared";
 
 interface SideVisuals {
   background: Graphics;
+  seatMarkers: Graphics;
   header: Text;
   joinLabel: Text;
   overflowBackground: Graphics;
   overflowLabel: Text;
+  bannerBackground: Graphics;
+  bannerText: Text;
+  bannerEndsAt: number;
+  bannerDurationMs: number;
+  bannerIntensity: number;
+  displayedCount: number;
+  targetCount: number;
 }
 
-interface FanSlot {
+interface FanSprite {
   container: Container;
   graphic: Graphics;
-  key: string;
+  lifecycle: "free" | "active" | "leaving";
+  userId?: string;
+  userName?: string;
+  side?: Side;
+  seat?: number;
+  baseX: number;
+  baseY: number;
+  depth: number;
+  animationStartedAt: number;
+  animationDurationMs: number;
+  animationKind?: "enter" | "leave";
+  bouncePhase: number;
+}
+
+interface LayoutGeometry {
+  panelX: number;
+  panelY: number;
+  panelWidth: number;
+  panelHeight: number;
+  halfWidth: number;
+  seatTop: number;
+  seatBottom: number;
+  seatColumns: number;
+  seatRows: number;
 }
 
 const FAN_CAP = 300;
+const FAN_POOL_CAP = 600;
+const SEAT_COLUMNS = 15;
+const SEAT_ROWS = 20;
 const JOIN_LABEL_MS = 3_000;
+const ENTER_ANIMATION_MS = 360;
+const LEAVE_ANIMATION_MS = 440;
 const SKIN_TONES = [0xffd7b5, 0xe9b38f, 0xc7835c, 0x9c6044, 0xf1c7a2, 0xb97754];
 
 export class StandRenderer {
@@ -26,197 +62,494 @@ export class StandRenderer {
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 34, fontWeight: "bold" },
   });
   private readonly visuals = new Map<Side, SideVisuals>();
-  private readonly fanSlots: FanSlot[] = [];
+  private readonly fanPool: FanSprite[] = [];
+  private readonly freeSprites: FanSprite[] = [];
+  private readonly activeByUser = new Map<string, FanSprite>();
+  private readonly seatOccupants = new Map<string, FanSprite>();
+  private readonly leavingSprites = new Set<FanSprite>();
+  private readonly pendingBySeat = new Map<string, Fan>();
   private state: StandState | undefined;
-  private width: number;
-  private height: number;
+  private geometry: LayoutGeometry;
+  private lastTickAt = 0;
+  private readonly muted: boolean;
+  private audioContext: AudioContext | undefined;
+  private noiseGain: GainNode | undefined;
+  private lastAudioTarget = 0;
 
-  constructor(private readonly stage: Container, width: number, height: number) {
-    this.width = width;
-    this.height = height;
+  constructor(private readonly stage: Container, width: number, height: number, muted = false) {
+    this.muted = muted;
+    this.geometry = this.makeGeometry(width, height);
     this.title.anchor.set(0.5);
-    this.stage.addChild(this.panel, this.title);
+    this.stage.addChild(this.panel);
 
     for (const side of SIDES) {
       const background = new Graphics();
+      const seatMarkers = new Graphics();
       const header = new Text({
         text: side.name,
         style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 22, fontWeight: "bold" },
       });
       const joinLabel = new Text({
         text: "",
-        style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 14 },
+        style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 13 },
       });
       const overflowBackground = new Graphics();
       const overflowLabel = new Text({
         text: "",
         style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 15, fontWeight: "bold" },
       });
-      this.stage.addChild(background, header, joinLabel, overflowBackground, overflowLabel);
-      this.visuals.set(side.id, { background, header, joinLabel, overflowBackground, overflowLabel });
+      const bannerBackground = new Graphics();
+      const bannerText = new Text({
+        text: "",
+        style: {
+          fill: "#ffffff",
+          fontFamily: "Arial, sans-serif",
+          fontSize: 18,
+          fontWeight: "bold",
+          align: "center",
+          wordWrap: true,
+          wordWrapWidth: Math.max(160, this.geometry.halfWidth - 44),
+        },
+      });
+      bannerText.visible = false;
+      bannerBackground.visible = false;
+      this.stage.addChild(
+        background,
+        seatMarkers,
+        header,
+        joinLabel,
+        overflowBackground,
+        overflowLabel,
+        bannerBackground,
+        bannerText,
+      );
+      this.visuals.set(side.id, {
+        background,
+        seatMarkers,
+        header,
+        joinLabel,
+        overflowBackground,
+        overflowLabel,
+        bannerBackground,
+        bannerText,
+        bannerEndsAt: 0,
+        bannerDurationMs: 6_000,
+        bannerIntensity: 0,
+        displayedCount: 0,
+        targetCount: 0,
+      });
     }
 
-    for (let index = 0; index < FAN_CAP; index += 1) {
-      const container = new Container();
-      const graphic = new Graphics();
-      container.addChild(graphic);
-      container.visible = false;
-      this.stage.addChild(container);
-      this.fanSlots.push({ container, graphic, key: "" });
-    }
-
+    this.stage.addChild(this.title);
     this.layout();
+    if (!muted) this.startProceduralCrowdSound();
   }
 
   resize(width: number, height: number): void {
-    this.width = width;
-    this.height = height;
+    this.geometry = this.makeGeometry(width, height);
     this.layout();
+    for (const sprite of this.activeByUser.values()) {
+      if (sprite.side !== undefined && sprite.seat !== undefined) this.positionSprite(sprite, sprite.side, sprite.seat);
+    }
   }
 
   update(state: StandState): void {
+    const isFirstState = this.state === undefined;
     this.state = state;
-    this.renderFans();
-    this.updateRecentJoinLabels(Date.now());
+    const now = Date.now();
+    for (const side of SIDES) {
+      const visuals = this.visuals.get(side.id);
+      if (!visuals) continue;
+      visuals.targetCount = state.counts[side.id];
+      const singing = state.singing[side.id];
+      if (singing && singing.endsAt > now) {
+        if (visuals.bannerText.text !== singing.text) this.setBanner(side.id, singing, now);
+        visuals.bannerEndsAt = Math.max(visuals.bannerEndsAt, singing.endsAt);
+        visuals.bannerIntensity = singing.intensity;
+      }
+    }
+
+    const targetFans = new Map(state.fans.slice(0, FAN_CAP).map((fan) => [seatKey(fan.side, fan.seat), fan]));
+    for (const userId of state.leftIds) {
+      const sprite = this.activeByUser.get(userId);
+      if (sprite) this.beginDeparture(sprite, now);
+    }
+
+    const animateArrivals = !isFirstState || state.joinedIds.length > 0;
+    for (const fan of targetFans.values()) {
+      this.reconcileFan(fan, now, animateArrivals);
+    }
+
+    for (const [userId, sprite] of this.activeByUser) {
+      const key = seatKey(sprite.side!, sprite.seat!);
+      if (targetFans.get(key)?.userId !== userId) this.beginDeparture(sprite, now);
+    }
+
+    for (const [key, pendingFan] of this.pendingBySeat) {
+      if (targetFans.get(key)?.userId !== pendingFan.userId) this.pendingBySeat.delete(key);
+    }
+
+    this.updateJoinLabelText(now);
     this.layout();
   }
 
+  playChant(chant: ChantEvent): void {
+    const now = Date.now();
+    const visuals = this.visuals.get(chant.side);
+    if (!visuals) return;
+    this.setBanner(chant.side, {
+      text: chant.text,
+      intensity: chant.intensity,
+      endsAt: now + chant.durationMs,
+    }, now, chant.durationMs);
+    if (this.audioContext?.state === "suspended") void this.audioContext.resume().catch(() => undefined);
+  }
+
   tick(now: number): void {
-    this.updateRecentJoinLabels(now);
+    const deltaSeconds = this.lastTickAt === 0 ? 1 / 60 : Math.min(0.05, (now - this.lastTickAt) / 1_000);
+    this.lastTickAt = now;
+    this.updateJoinLabelText(now);
+    this.updateCounters(deltaSeconds);
+    this.animateSprites(now);
+    this.updateBanners(now);
+    this.updateCrowdSound(now);
+  }
+
+  private makeGeometry(width: number, height: number): LayoutGeometry {
+    const margin = Math.min(40, Math.max(16, width * 0.04));
+    const panelY = 68;
+    const panelWidth = Math.max(280, width - margin * 2);
+    const panelHeight = Math.max(220, height - panelY - 28);
+    return {
+      panelX: margin,
+      panelY,
+      panelWidth,
+      panelHeight,
+      halfWidth: panelWidth / SIDES.length,
+      seatTop: panelY + 112,
+      seatBottom: panelY + panelHeight - 54,
+      seatColumns: SEAT_COLUMNS,
+      seatRows: SEAT_ROWS,
+    };
   }
 
   private layout(): void {
-    const margin = Math.min(40, Math.max(16, this.width * 0.04));
-    const panelX = margin;
-    const panelY = 68;
-    const panelWidth = Math.max(280, this.width - margin * 2);
-    const panelHeight = Math.max(220, this.height - panelY - 28);
-
+    const { panelX, panelY, panelWidth, panelHeight, halfWidth } = this.geometry;
     this.panel.clear().roundRect(panelX, panelY, panelWidth, panelHeight, 22)
-      .fill({ color: 0x081421, alpha: 0.82 })
+      .fill({ color: 0x081421, alpha: 0.84 })
       .stroke({ color: 0xffffff, alpha: 0.2, width: 2 });
-    this.title.position.set(this.width / 2, 34);
+    this.title.position.set(this.geometry.panelX + halfWidth, 34);
 
-    const halfWidth = panelWidth / SIDES.length;
     for (let sideIndex = 0; sideIndex < SIDES.length; sideIndex += 1) {
       const side = SIDES[sideIndex];
       if (!side) continue;
-      const sideStart = panelX + sideIndex * halfWidth;
       const visuals = this.visuals.get(side.id);
       if (!visuals) continue;
-
-      visuals.background.clear().roundRect(
-        sideStart + 8,
-        panelY + 8,
-        halfWidth - 16,
-        panelHeight - 16,
-        16,
-      ).fill({ color: side.primaryColor, alpha: 0.2 });
-      visuals.header.position.set(sideStart + halfWidth / 2, panelY + 28);
+      const sideStart = panelX + sideIndex * halfWidth;
+      visuals.background.clear().roundRect(sideStart + 8, panelY + 8, halfWidth - 16, panelHeight - 16, 16)
+        .fill({ color: side.primaryColor, alpha: 0.18 });
       visuals.header.anchor.set(0.5);
-      visuals.header.text = `${side.name}  ·  ${this.state?.counts[side.id] ?? 0}`;
-      visuals.joinLabel.position.set(sideStart + halfWidth / 2, panelY + 54);
+      visuals.header.position.set(sideStart + halfWidth / 2, panelY + 26);
       visuals.joinLabel.anchor.set(0.5);
+      visuals.joinLabel.position.set(sideStart + halfWidth / 2, panelY + 52);
+      visuals.bannerText.anchor.set(0.5);
+      visuals.bannerText.position.set(sideStart + halfWidth / 2, panelY + 83);
+      visuals.bannerText.style.wordWrapWidth = Math.max(150, halfWidth - 50);
+      visuals.bannerBackground.clear();
+      const bannerWidth = Math.min(halfWidth - 32, Math.max(180, visuals.bannerText.width + 26));
+      visuals.bannerBackground.roundRect(sideStart + (halfWidth - bannerWidth) / 2, panelY + 65, bannerWidth, 36, 9)
+        .fill({ color: side.primaryColor, alpha: 0.9 });
 
-      const overflow = this.state?.overflowCounts[side.id] ?? 0;
-      const bandHeight = 34;
-      const bandY = panelY + panelHeight - bandHeight - 12;
-      visuals.overflowBackground.visible = overflow > 0;
-      visuals.overflowLabel.visible = overflow > 0;
-      visuals.overflowBackground.clear();
-      if (overflow > 0) {
-        visuals.overflowBackground.roundRect(sideStart + 18, bandY, halfWidth - 36, bandHeight, 10)
-          .fill({ color: side.primaryColor, alpha: 0.72 });
-        for (let dot = 0; dot < 20; dot += 1) {
-          const dotX = sideStart + 32 + (dot % 10) * ((halfWidth - 64) / 10);
-          const dotY = bandY + 10 + Math.floor(dot / 10) * 10;
-          visuals.overflowBackground.circle(dotX, dotY, 2.5)
-            .fill({ color: dot % 2 === 0 ? side.secondaryColor : side.primaryColor, alpha: 0.9 });
-        }
-        visuals.overflowLabel.text = `+${overflow} en la grada`;
-        visuals.overflowLabel.anchor.set(0.5);
-        visuals.overflowLabel.position.set(sideStart + halfWidth / 2, bandY + bandHeight / 2);
+      this.drawEmptySeats(visuals.seatMarkers, side.id);
+      this.drawOverflow(visuals, side.id, side.primaryColor, side.secondaryColor, sideStart, panelY, panelHeight, halfWidth);
+    }
+  }
+
+  private drawEmptySeats(markers: Graphics, side: Side): void {
+    markers.clear();
+    const { panelX, halfWidth, seatTop, seatBottom, seatColumns, seatRows } = this.geometry;
+    const sideIndex = SIDES.findIndex((candidate) => candidate.id === side);
+    const sideStart = panelX + sideIndex * halfWidth;
+    const cellWidth = (halfWidth - 26) / seatColumns;
+    const rowHeight = (seatBottom - seatTop) / (seatRows - 1);
+    for (let seat = 0; seat < seatColumns * seatRows; seat += 1) {
+      const row = Math.floor(seat / seatColumns);
+      const column = seat % seatColumns;
+      markers.circle(sideStart + 13 + cellWidth * (column + 0.5), seatBottom - row * rowHeight + 7, 3)
+        .fill({ color: 0xffffff, alpha: 0.12 });
+    }
+  }
+
+  private drawOverflow(
+    visuals: SideVisuals,
+    side: Side,
+    primaryColor: number,
+    secondaryColor: number,
+    sideStart: number,
+    panelY: number,
+    panelHeight: number,
+    halfWidth: number,
+  ): void {
+    const overflow = this.state?.overflowCounts[side] ?? 0;
+    const bandY = panelY + panelHeight - 40;
+    visuals.overflowBackground.visible = overflow > 0;
+    visuals.overflowLabel.visible = overflow > 0;
+    visuals.overflowBackground.clear();
+    if (overflow <= 0) return;
+
+    visuals.overflowBackground.roundRect(sideStart + 18, bandY, halfWidth - 36, 29, 9)
+      .fill({ color: primaryColor, alpha: 0.72 });
+    for (let dot = 0; dot < 20; dot += 1) {
+      const dotX = sideStart + 31 + (dot % 10) * ((halfWidth - 64) / 10);
+      const dotY = bandY + 8 + Math.floor(dot / 10) * 9;
+      visuals.overflowBackground.circle(dotX, dotY, 2.3)
+        .fill({ color: dot % 2 === 0 ? secondaryColor : primaryColor, alpha: 0.9 });
+    }
+    visuals.overflowLabel.text = `+${overflow} en la grada`;
+    visuals.overflowLabel.anchor.set(0.5);
+    visuals.overflowLabel.position.set(sideStart + halfWidth / 2, bandY + 15);
+  }
+
+  private reconcileFan(fan: Fan, now: number, animateArrivals: boolean): void {
+    const current = this.activeByUser.get(fan.userId);
+    const currentSeatKey = current?.side !== undefined && current.seat !== undefined
+      ? seatKey(current.side, current.seat)
+      : undefined;
+    const desiredSeatKey = seatKey(fan.side, fan.seat);
+
+    if (current && currentSeatKey === desiredSeatKey && current.lifecycle === "active") {
+      if (current.userName !== fan.userName) {
+        current.userName = fan.userName;
+        const side = SIDES.find((candidate) => candidate.id === fan.side);
+        if (side) drawFan(current.graphic, fan, side.primaryColor, side.secondaryColor);
       }
+      return;
+    }
+    if (current) this.beginDeparture(current, now);
+
+    const occupant = this.seatOccupants.get(desiredSeatKey);
+    if (occupant && occupant.lifecycle !== "free") {
+      this.pendingBySeat.set(desiredSeatKey, fan);
+      if (occupant.lifecycle === "active") this.beginDeparture(occupant, now);
+      return;
     }
 
-    if (this.state) this.positionFans(this.state, panelX, panelY, panelWidth, panelHeight);
+    this.activateFan(fan, this.takeSprite(), now, animateArrivals);
   }
 
-  private renderFans(): void {
-    if (!this.state) return;
-    const fansBySide = new Map<Side, Fan[]>();
-    for (const side of SIDES) fansBySide.set(side.id, []);
-    for (const fan of this.state.fans.slice(0, FAN_CAP)) fansBySide.get(fan.side)?.push(fan);
+  private activateFan(fan: Fan, sprite: FanSprite | undefined, now: number, animate: boolean): void {
+    if (!sprite) return;
+    const side = SIDES.find((candidate) => candidate.id === fan.side);
+    if (!side) return;
+    sprite.lifecycle = "active";
+    sprite.userId = fan.userId;
+    sprite.userName = fan.userName;
+    sprite.side = fan.side;
+    sprite.seat = fan.seat;
+    sprite.bouncePhase = hashString(fan.userId) % 628 / 100;
+    drawFan(sprite.graphic, fan, side.primaryColor, side.secondaryColor);
+    this.positionSprite(sprite, fan.side, fan.seat);
+    sprite.container.visible = true;
+    sprite.animationKind = animate ? "enter" : undefined;
+    sprite.animationStartedAt = now;
+    sprite.animationDurationMs = animate ? ENTER_ANIMATION_MS : 0;
+    if (animate) {
+      sprite.container.alpha = 0;
+      sprite.container.scale.set(sprite.depth * 0.55);
+      sprite.container.position.y = sprite.baseY - 13;
+    } else {
+      sprite.container.alpha = 1;
+      sprite.container.scale.set(sprite.depth);
+    }
+    this.activeByUser.set(fan.userId, sprite);
+    this.seatOccupants.set(seatKey(fan.side, fan.seat), sprite);
+  }
 
-    let slotIndex = 0;
-    for (const side of SIDES) {
-      for (const fan of fansBySide.get(side.id) ?? []) {
-        const slot = this.fanSlots[slotIndex];
-        if (!slot) continue;
-        const key = `${fan.userId}:${fan.userName}:${fan.side}`;
-        if (slot.key !== key) {
-          drawFan(slot.graphic, fan, side.primaryColor, side.secondaryColor);
-          slot.key = key;
-        }
-        slot.container.visible = true;
-        slotIndex += 1;
+  private beginDeparture(sprite: FanSprite, now: number): void {
+    if (sprite.lifecycle !== "active") return;
+    if (sprite.userId) this.activeByUser.delete(sprite.userId);
+    sprite.lifecycle = "leaving";
+    sprite.animationKind = "leave";
+    sprite.animationStartedAt = now;
+    sprite.animationDurationMs = LEAVE_ANIMATION_MS;
+    this.leavingSprites.add(sprite);
+  }
+
+  private takeSprite(): FanSprite | undefined {
+    const reusable = this.freeSprites.pop();
+    if (reusable) return reusable;
+    if (this.fanPool.length >= FAN_POOL_CAP) return undefined;
+
+    const container = new Container();
+    const graphic = new Graphics();
+    container.addChild(graphic);
+    container.visible = false;
+    this.stage.addChild(container);
+    const sprite: FanSprite = {
+      container,
+      graphic,
+      lifecycle: "free",
+      baseX: 0,
+      baseY: 0,
+      depth: 1,
+      animationStartedAt: 0,
+      animationDurationMs: 0,
+      bouncePhase: 0,
+    };
+    this.fanPool.push(sprite);
+    return sprite;
+  }
+
+  private positionSprite(sprite: FanSprite, side: Side, seat: number): void {
+    const sideIndex = SIDES.findIndex((candidate) => candidate.id === side);
+    const { panelX, halfWidth, seatBottom, seatTop, seatColumns, seatRows } = this.geometry;
+    const row = Math.floor(seat / seatColumns);
+    const column = seat % seatColumns;
+    const sideStart = panelX + sideIndex * halfWidth;
+    const cellWidth = (halfWidth - 26) / seatColumns;
+    const rowHeight = (seatBottom - seatTop) / (seatRows - 1);
+    sprite.baseX = sideStart + 13 + cellWidth * (column + 0.5);
+    sprite.baseY = seatBottom - row * rowHeight;
+    sprite.depth = 1 - 0.42 * (row / (seatRows - 1));
+    sprite.container.position.set(sprite.baseX, sprite.baseY);
+    if (!sprite.animationKind) sprite.container.scale.set(sprite.depth);
+  }
+
+  private animateSprites(now: number): void {
+    for (const sprite of this.fanPool) {
+      if (sprite.lifecycle === "free") continue;
+      const progress = sprite.animationDurationMs === 0
+        ? 1
+        : Math.min(1, (now - sprite.animationStartedAt) / sprite.animationDurationMs);
+
+      if (sprite.animationKind === "enter") {
+        const eased = 1 - Math.pow(1 - progress, 3);
+        sprite.container.alpha = eased;
+        sprite.container.scale.set(sprite.depth * (0.55 + eased * 0.45));
+        sprite.container.position.y = sprite.baseY - 13 * (1 - eased);
+        if (progress >= 1) sprite.animationKind = undefined;
+      } else if (sprite.animationKind === "leave") {
+        sprite.container.alpha = 1 - progress;
+        sprite.container.scale.set(sprite.depth * (1 - progress * 0.3));
+        sprite.container.position.y = sprite.baseY + 12 * progress;
+        if (progress >= 1) this.finishDeparture(sprite, now);
+        continue;
       }
-    }
-    for (let index = slotIndex; index < this.fanSlots.length; index += 1) {
-      const slot = this.fanSlots[index];
-      if (slot) slot.container.visible = false;
-    }
-  }
 
-  private positionFans(state: StandState, panelX: number, panelY: number, panelWidth: number, panelHeight: number): void {
-    let slotIndex = 0;
-    const halfWidth = panelWidth / SIDES.length;
-    const bandHeight = 34;
-
-    for (let sideIndex = 0; sideIndex < SIDES.length; sideIndex += 1) {
-      const side = SIDES[sideIndex];
-      if (!side) continue;
-      const sideFans = state.fans.filter((fan) => fan.side === side.id).slice(0, FAN_CAP);
-      const sideStart = panelX + sideIndex * halfWidth;
-      const columns = Math.max(5, Math.floor((halfWidth - 28) / 27));
-      const rows = Math.max(1, Math.ceil(sideFans.length / columns));
-      const hasOverflow = state.overflowCounts[side.id] > 0;
-      const seatTop = panelY + 76;
-      const seatBottom = panelY + panelHeight - (hasOverflow ? bandHeight + 20 : 16);
-      const seatHeight = Math.max(24, seatBottom - seatTop);
-      const cellWidth = (halfWidth - 24) / columns;
-      const rowHeight = seatHeight / rows;
-
-      sideFans.forEach((_fan, index) => {
-        const slot = this.fanSlots[slotIndex];
-        if (!slot) return;
-        const row = Math.floor(index / columns);
-        const column = index % columns;
-        const depth = rows <= 1 ? 1 : 0.58 + 0.42 * (row / (rows - 1));
-        slot.container.scale.set(depth);
-        slot.container.position.set(
-          sideStart + 12 + cellWidth * (column + 0.5),
-          seatTop + rowHeight * (row + 0.52),
-        );
-        slotIndex += 1;
-      });
+      const singing = sprite.side ? this.state?.singing[sprite.side] : null;
+      const bounce = singing && singing.endsAt > now
+        ? Math.abs(Math.sin(now * (0.008 + singing.intensity * 0.009) + sprite.bouncePhase)) * (2 + 8 * singing.intensity)
+        : 0;
+      if (!sprite.animationKind) sprite.container.position.y = sprite.baseY - bounce;
     }
   }
 
-  private updateRecentJoinLabels(now: number): void {
-    const joinsBySide = new Map<Side, string[]>();
-    for (const side of SIDES) joinsBySide.set(side.id, []);
-    for (const join of this.state?.recentJoins ?? []) {
-      if (now - join.timestamp > JOIN_LABEL_MS) continue;
-      joinsBySide.get(join.side)?.push(join.userName);
+  private finishDeparture(sprite: FanSprite, now: number): void {
+    const key = sprite.side !== undefined && sprite.seat !== undefined ? seatKey(sprite.side, sprite.seat) : undefined;
+    if (key && this.seatOccupants.get(key) === sprite) this.seatOccupants.delete(key);
+    this.leavingSprites.delete(sprite);
+    sprite.lifecycle = "free";
+    sprite.animationKind = undefined;
+    sprite.userId = undefined;
+    sprite.userName = undefined;
+    sprite.side = undefined;
+    sprite.seat = undefined;
+    sprite.container.visible = false;
+    sprite.container.alpha = 1;
+    const pending = key ? this.pendingBySeat.get(key) : undefined;
+    if (pending && this.state?.fans.some((fan) => fan.userId === pending.userId && seatKey(fan.side, fan.seat) === key)) {
+      this.pendingBySeat.delete(key!);
+      this.activateFan(pending, sprite, now, true);
+    } else {
+      this.freeSprites.push(sprite);
     }
+  }
 
+  private updateCounters(deltaSeconds: number): void {
     for (const side of SIDES) {
       const visuals = this.visuals.get(side.id);
       if (!visuals) continue;
-      const names = joinsBySide.get(side.id)?.slice(-3) ?? [];
+      const difference = visuals.targetCount - visuals.displayedCount;
+      visuals.displayedCount += difference * Math.min(1, deltaSeconds * 7);
+      if (Math.abs(difference) < 0.05) visuals.displayedCount = visuals.targetCount;
+      visuals.header.text = `${side.name}  ·  ${Math.round(visuals.displayedCount)}`;
+    }
+  }
+
+  private updateJoinLabelText(now: number): void {
+    for (const side of SIDES) {
+      const visuals = this.visuals.get(side.id);
+      if (!visuals) continue;
+      const names = (this.state?.recentJoins ?? [])
+        .filter((join) => join.side === side.id && now - join.timestamp <= JOIN_LABEL_MS)
+        .slice(-3)
+        .map((join) => join.userName);
       visuals.joinLabel.text = names.length > 0 ? `Se unieron: ${names.join(" · ")}` : "";
     }
+  }
+
+  private setBanner(side: Side, singing: { text: string; intensity: number; endsAt: number }, now: number, durationMs?: number): void {
+    const visuals = this.visuals.get(side);
+    if (!visuals) return;
+    visuals.bannerText.text = singing.text;
+    visuals.bannerEndsAt = singing.endsAt;
+    visuals.bannerDurationMs = durationMs ?? Math.max(500, singing.endsAt - now);
+    visuals.bannerIntensity = singing.intensity;
+    visuals.bannerText.visible = true;
+    visuals.bannerBackground.visible = true;
+    this.layout();
+  }
+
+  private updateBanners(now: number): void {
+    for (const side of SIDES) {
+      const visuals = this.visuals.get(side.id);
+      if (!visuals) continue;
+      const remaining = visuals.bannerEndsAt - now;
+      const alpha = remaining <= 0 ? 0 : Math.min(1, remaining / Math.min(1_400, visuals.bannerDurationMs));
+      visuals.bannerText.alpha = alpha;
+      visuals.bannerBackground.alpha = alpha;
+      visuals.bannerText.visible = remaining > 0;
+      visuals.bannerBackground.visible = remaining > 0;
+    }
+  }
+
+  private startProceduralCrowdSound(): void {
+    try {
+      const context = new AudioContext();
+      const buffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
+      const channel = buffer.getChannelData(0);
+      for (let index = 0; index < channel.length; index += 1) channel[index] = (Math.random() * 2 - 1) * 0.5;
+
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 850;
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      source.connect(filter).connect(gain).connect(context.destination);
+      source.start();
+      this.audioContext = context;
+      this.noiseGain = gain;
+      void context.resume().catch(() => undefined);
+    } catch {
+      this.audioContext = undefined;
+      this.noiseGain = undefined;
+    }
+  }
+
+  private updateCrowdSound(now: number): void {
+    if (this.muted || !this.audioContext || !this.noiseGain) return;
+    let intensity = 0;
+    for (const side of SIDES) {
+      const singing = this.state?.singing[side.id];
+      if (singing && singing.endsAt > now) intensity = Math.max(intensity, singing.intensity);
+    }
+    const target = intensity > 0 ? 0.015 + intensity * 0.075 : 0;
+    if (Math.abs(target - this.lastAudioTarget) < 0.005) return;
+    this.lastAudioTarget = target;
+    this.noiseGain.gain.setTargetAtTime(target, this.audioContext.currentTime, target > 0 ? 0.18 : 0.65);
   }
 }
 
@@ -243,4 +576,8 @@ function hashString(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function seatKey(side: Side, seat: number): string {
+  return `${side}:${seat}`;
 }

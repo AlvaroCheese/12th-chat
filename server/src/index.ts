@@ -8,6 +8,8 @@ import { TwitchChatService } from "./twitch/chatService.js";
 import { FileTokenStore } from "./twitch/tokenStore.js";
 import { registerTwitchAuthRoutes } from "./routes/twitchAuth.js";
 import { StandAggregator, StandStore } from "./aggregator/index.js";
+import { ChantDetector } from "./chat/chantDetector.js";
+import { getChantConfig, getFanInactivityTimeoutMs } from "./config/chants.js";
 
 const app = Fastify({
   logger: {
@@ -27,7 +29,9 @@ const authProvider = new RefreshingAuthProvider({
   redirectUri: env.TWITCH_REDIRECT_URI,
 });
 const chatService = new TwitchChatService(authProvider, tokenStore);
-const standStore = new StandStore();
+const mockChatEnabled = env.MOCK_CHAT === "1";
+const standStore = new StandStore(getFanInactivityTimeoutMs(mockChatEnabled));
+const chantDetector = new ChantDetector(standStore, getChantConfig(mockChatEnabled));
 const standAggregator = new StandAggregator(io, standStore, (snapshot) => {
   app.log.debug(
     {
@@ -52,12 +56,18 @@ app.get("/health", async () => ({ ok: true }));
 registerTwitchAuthRoutes(app, authProvider, chatService, tokenStore);
 
 chatEventBus.on("chat", (event) => {
-  standStore.handleChatEvent(event);
+  const side = standStore.handleChatEvent(event);
+  if (side) {
+    const chant = chantDetector.handle(event, side);
+    if (chant) {
+      io.emit("chant", chant);
+      app.log.info({ side: chant.side, intensity: chant.intensity }, "Chant triggered");
+    }
+  }
   const safeText = event.text.replace(/\p{Cc}+/gu, " ").slice(0, 160);
   console.info(`[chat] ${event.userName}: ${safeText}`);
 });
 
-const mockChatEnabled = env.MOCK_CHAT === "1";
 app.log.info(`Mock chat ${mockChatEnabled ? "enabled" : "disabled"}`);
 
 if (mockChatEnabled) {
@@ -75,6 +85,7 @@ io.on("connection", (socket) => {
   app.log.info({ socketId: socket.id }, "Overlay connected");
   standAggregator.sendTo(socket);
   socket.on("disconnect", () => {
+    standAggregator.removeSocket(socket);
     app.log.info({ socketId: socket.id }, "Overlay disconnected");
   });
 });

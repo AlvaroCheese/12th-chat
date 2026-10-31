@@ -1,102 +1,129 @@
-import type { ChatEvent, Fan, RecentJoin, Side, StandState } from "@twitch-graderia/shared";
+import type { ChatEvent, Fan, RecentJoin, Side, SingingState, StandState } from "@twitch-graderia/shared";
 import { SIDES } from "@twitch-graderia/shared";
 import { parseJoinCommand } from "../chat/joinCommand.js";
 
-interface StandMember extends Fan {
+interface StandMember extends Omit<Fan, "seat"> {
   activityCount: number;
   joinedAt: number;
   lastActive: number;
+  seat?: number;
 }
 
-const FAN_CAP = 300;
+const DISPLAY_CAP = 300;
+const SEATS_PER_SIDE = DISPLAY_CAP;
 const RECENT_JOIN_DURATION_MS = 3_000;
 const RECENT_JOIN_LIMIT = 20;
 
 export class StandStore {
   private readonly users = new Map<string, StandMember>();
+  private readonly occupiedSeats = Object.fromEntries(SIDES.map((side) => [side.id, new Map<number, string>()])) as Record<
+    Side,
+    Map<number, string>
+  >;
   private readonly recentJoins: RecentJoin[] = [];
+  private readonly pendingJoinedIds = new Set<string>();
+  private readonly pendingLeftIds = new Set<string>();
+  private readonly singing = Object.fromEntries(SIDES.map((side) => [side.id, null])) as Record<
+    Side,
+    SingingState | null
+  >;
 
-  handleChatEvent(event: ChatEvent): void {
+  constructor(private readonly inactivityTimeoutMs = 120_000) {}
+
+  handleChatEvent(event: ChatEvent): Side | undefined {
     const now = event.timestamp || Date.now();
-    const requestedSide = parseJoinCommand(event.text);
     const existing = this.users.get(event.userId);
+    const requestedSide = parseJoinCommand(event.text);
 
     if (requestedSide) {
-      const member: StandMember = {
+      if (existing?.side === requestedSide) {
+        existing.userName = event.userName;
+        existing.lastActive = now;
+        existing.activityCount += 1;
+        return undefined;
+      }
+
+      const activityCount = (existing?.activityCount ?? 0) + 1;
+      if (existing) this.removeMember(event.userId);
+      this.users.set(event.userId, {
         userId: event.userId,
         userName: event.userName,
         side: requestedSide,
-        activityCount: (existing?.activityCount ?? 0) + 1,
+        activityCount,
         joinedAt: now,
         lastActive: now,
-      };
-      this.users.set(event.userId, member);
-      this.recentJoins.push({
-        userId: member.userId,
-        userName: member.userName,
-        side: member.side,
-        timestamp: now,
       });
-      if (this.recentJoins.length > RECENT_JOIN_LIMIT) this.recentJoins.shift();
-      return;
+      this.promoteWaiting();
+      return undefined;
     }
 
-    if (existing) {
-      existing.userName = event.userName;
-      existing.lastActive = now;
-      existing.activityCount += 1;
+    if (/^\s*!leave\s*$/i.test(event.text)) {
+      if (existing) {
+        this.removeMember(event.userId);
+        this.promoteWaiting();
+      }
+      return undefined;
     }
+
+    if (!existing) return undefined;
+    existing.userName = event.userName;
+    existing.lastActive = now;
+    existing.activityCount += 1;
+
+    // Commands can keep a fan active, but are never considered chant text.
+    return event.text.trim().startsWith("!") ? undefined : existing.side;
   }
 
-  createSnapshot(now = Date.now()): StandState {
-    const counts = Object.fromEntries(SIDES.map((side) => [side.id, 0])) as Record<Side, number>;
-    const bySide = Object.fromEntries(SIDES.map((side) => [side.id, [] as StandMember[]])) as Record<
-      Side,
-      StandMember[]
-    >;
+  expireInactive(now = Date.now()): boolean {
+    const expiredUserIds = [...this.users.values()]
+      .filter((member) => now - member.lastActive >= this.inactivityTimeoutMs)
+      .map((member) => member.userId);
+    if (expiredUserIds.length === 0) return false;
 
-    for (const member of this.users.values()) {
-      counts[member.side] += 1;
-      bySide[member.side].push(member);
-    }
+    for (const userId of expiredUserIds) this.removeMember(userId);
+    this.promoteWaiting();
+    return true;
+  }
 
+  setSinging(side: Side, state: SingingState): void {
+    this.singing[side] = state;
+  }
+
+  getSinging(side: Side): SingingState | null {
+    return this.singing[side];
+  }
+
+  expireSinging(now = Date.now()): boolean {
+    let changed = false;
     for (const side of SIDES) {
-      bySide[side.id].sort((left, right) => memberPriority(right, now) - memberPriority(left, now));
-    }
-
-    const selected = new Map<Side, StandMember[]>();
-    let remaining = FAN_CAP;
-    const balancedFirstPass = Math.floor(FAN_CAP / SIDES.length);
-
-    for (const side of SIDES) {
-      const members = bySide[side.id].slice(0, balancedFirstPass);
-      selected.set(side.id, members);
-      remaining -= members.length;
-    }
-
-    while (remaining > 0) {
-      let allocated = false;
-      for (const side of SIDES) {
-        const members = selected.get(side.id) ?? [];
-        const candidate = bySide[side.id][members.length];
-        if (!candidate || remaining === 0) continue;
-        members.push(candidate);
-        selected.set(side.id, members);
-        remaining -= 1;
-        allocated = true;
+      if (this.singing[side.id] && this.singing[side.id]!.endsAt <= now) {
+        this.singing[side.id] = null;
+        changed = true;
       }
-      if (!allocated) break;
+    }
+    return changed;
+  }
+
+  createSnapshot(now = Date.now(), includeDeltas = true): StandState {
+    const counts = Object.fromEntries(SIDES.map((side) => [side.id, 0])) as Record<Side, number>;
+    const fans: Fan[] = [];
+
+    for (const member of this.users.values()) counts[member.side] += 1;
+    for (const side of SIDES) {
+      const sideSeats = this.occupiedSeats[side.id];
+      for (const [seat, userId] of sideSeats) {
+        const member = this.users.get(userId);
+        if (!member) continue;
+        fans.push({ userId, userName: member.userName, side: side.id, seat });
+      }
     }
 
-    const fans: Fan[] = SIDES.flatMap((side) =>
-      (selected.get(side.id) ?? []).map(({ userId, userName, side: memberSide }) => ({
-        userId,
-        userName,
-        side: memberSide,
-      })),
-    );
+    const visibleCounts = Object.fromEntries(SIDES.map((side) => [side.id, this.occupiedSeats[side.id].size])) as Record<
+      Side,
+      number
+    >;
     const overflowCounts = Object.fromEntries(
-      SIDES.map((side) => [side.id, counts[side.id] - (selected.get(side.id)?.length ?? 0)]),
+      SIDES.map((side) => [side.id, counts[side.id] - visibleCounts[side.id]]),
     ) as Record<Side, number>;
 
     while (this.recentJoins[0] && this.recentJoins[0].timestamp < now - RECENT_JOIN_DURATION_MS) {
@@ -108,11 +135,67 @@ export class StandStore {
       fans,
       overflowCounts,
       recentJoins: [...this.recentJoins],
+      joinedIds: includeDeltas ? [...this.pendingJoinedIds] : [],
+      leftIds: includeDeltas ? [...this.pendingLeftIds] : [],
+      singing: Object.fromEntries(SIDES.map((side) => [side.id, this.singing[side.id] && { ...this.singing[side.id] }])) as Record<
+        Side,
+        SingingState | null
+      >,
     };
   }
-}
 
-function memberPriority(member: StandMember, now: number): number {
-  const recencyBonus = Math.max(0, RECENT_JOIN_DURATION_MS * 20 - (now - member.lastActive)) / 1_000;
-  return member.activityCount * 100 + recencyBonus;
+  acknowledgeSnapshot(): void {
+    this.pendingJoinedIds.clear();
+    this.pendingLeftIds.clear();
+  }
+
+  private removeMember(userId: string): void {
+    const member = this.users.get(userId);
+    if (!member) return;
+    this.users.delete(userId);
+    if (member.seat === undefined) return;
+
+    this.occupiedSeats[member.side].delete(member.seat);
+    this.pendingLeftIds.add(userId);
+  }
+
+  private promoteWaiting(): void {
+    while (this.displayedFanCount() < DISPLAY_CAP) {
+      const candidates = SIDES.map((side) => {
+        const waiting = [...this.users.values()]
+          .filter((member) => member.side === side.id && member.seat === undefined)
+          .sort((left, right) => left.joinedAt - right.joinedAt);
+        return { side: side.id, visible: this.occupiedSeats[side.id].size, member: waiting[0] };
+      })
+        .filter((candidate) => candidate.member && candidate.visible < SEATS_PER_SIDE)
+        .sort((left, right) => left.visible - right.visible || (left.member!.joinedAt - right.member!.joinedAt));
+
+      const candidate = candidates[0];
+      if (!candidate?.member) return;
+
+      const seat = this.findFirstFreeSeat(candidate.side);
+      if (seat === undefined) return;
+      candidate.member.seat = seat;
+      this.occupiedSeats[candidate.side].set(seat, candidate.member.userId);
+      this.pendingJoinedIds.add(candidate.member.userId);
+      this.recentJoins.push({
+        userId: candidate.member.userId,
+        userName: candidate.member.userName,
+        side: candidate.side,
+        timestamp: Date.now(),
+      });
+      if (this.recentJoins.length > RECENT_JOIN_LIMIT) this.recentJoins.shift();
+    }
+  }
+
+  private findFirstFreeSeat(side: Side): number | undefined {
+    for (let seat = 0; seat < SEATS_PER_SIDE; seat += 1) {
+      if (!this.occupiedSeats[side].has(seat)) return seat;
+    }
+    return undefined;
+  }
+
+  private displayedFanCount(): number {
+    return SIDES.reduce((total, side) => total + this.occupiedSeats[side.id].size, 0);
+  }
 }

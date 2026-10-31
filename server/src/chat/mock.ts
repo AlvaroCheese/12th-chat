@@ -1,64 +1,96 @@
 import type { ChatEvent, Side } from "@twitch-graderia/shared";
 import { chatEventBus } from "./eventBus.js";
 
-const chantUsers: Array<{ userName: string; side: Side; moderator?: boolean }> = [
-  { userName: "CanteraFan", side: "argentina", moderator: true },
-  { userName: "Golazo99", side: "argentina" },
-  { userName: "LaBanda", side: "argentina" },
-  { userName: "VisitanteMX", side: "mexico", moderator: true },
-  { userName: "TifoAzul", side: "mexico" },
-  { userName: "PorteroFan", side: "mexico" },
-];
-
-const chants = ["¡Vamos equipo!", "Dale dale dale", "Olé olé olé"];
-let messageIndex = 0;
+const mockUsersBySide: Record<Side, string[]> = { argentina: [], mexico: [] };
+let nextUserIndex = 0;
+let leaveCursor = 0;
+let switchCursor = 12;
 
 export function startMockChat(): void {
-  console.info("Mock chat generator started (500 simulated joiners)");
+  console.info("Mock chat generator started (500 initial joiners with continuous churn)");
 
-  let usersGenerated = 0;
-  const joinTimer = setInterval(() => {
-    for (let count = 0; count < 10 && usersGenerated < 500; count += 1) {
-      const index = usersGenerated;
-      const side: Side = index % 2 === 0 ? "argentina" : "mexico";
-      const userName = `${side === "argentina" ? "Albi" : "Tri"}Fan${index + 1}`;
-      chatEventBus.emit("chat", {
-        userId: `mock-fan-${index + 1}`,
-        userName,
-        text: `!join ${side}`,
-        emotes: [],
-        badges: {
-          broadcaster: false,
-          moderator: index % 125 === 0,
-          subscriber: index % 3 === 0,
-        },
-        side,
-        timestamp: Date.now(),
-      });
-      usersGenerated += 1;
+  const initialJoinTimer = setInterval(() => {
+    for (let count = 0; count < 10 && nextUserIndex < 500; count += 1) {
+      addMockUser(nextUserIndex);
+      nextUserIndex += 1;
     }
 
-    if (usersGenerated >= 500) clearInterval(joinTimer);
+    if (nextUserIndex >= 500) clearInterval(initialJoinTimer);
   }, 50);
 
   setInterval(() => {
-    const user = chantUsers[messageIndex % chantUsers.length];
-    if (!user) return;
+    for (let count = 0; count < 20; count += 1) {
+      addMockUser(nextUserIndex);
+      nextUserIndex += 1;
+    }
+  }, 4_500);
 
-    const event: ChatEvent = {
-      userId: `mock-${user.userName.toLowerCase()}`,
-      userName: user.userName,
-      text: chants[Math.floor(messageIndex / chantUsers.length) % chants.length] ?? "¡Vamos equipo!",
-      emotes: [],
-      badges: {
-        broadcaster: false,
-        moderator: user.moderator ?? false,
-        subscriber: messageIndex % 2 === 0,
-      },
-      side: user.side,
-      timestamp: Date.now(),
-    };
-    messageIndex += 1;
-    chatEventBus.emit("chat", event);
-  }, 700);
+  setInterval(() => {
+    for (let count = 0; count < 10; count += 1) {
+      const side: Side = count % 2 === 0 ? "argentina" : "mexico";
+      const visibleCandidates = mockUsersBySide[side].slice(0, 150);
+      const userName = visibleCandidates[leaveCursor % Math.max(visibleCandidates.length, 1)];
+      if (userName) emitMockEvent(userName, "!leave");
+      leaveCursor += 1;
+    }
+  }, 8_000);
+
+  setInterval(() => {
+    const currentSide: Side = switchCursor % 2 === 0 ? "argentina" : "mexico";
+    const otherSide: Side = currentSide === "argentina" ? "mexico" : "argentina";
+    const userName = mockUsersBySide[currentSide][switchCursor % Math.max(mockUsersBySide[currentSide].length, 1)];
+    if (userName) emitMockEvent(userName, `!join ${otherSide}`);
+    switchCursor += 7;
+  }, 6_500);
+
+  setTimeout(() => {
+    const joinedUser = mockUsersBySide.argentina[0];
+    if (joinedUser) emitMockEvent(joinedUser, "blocked placeholder chant");
+  }, 1_500);
+
+  let chantCycle = 0;
+  setInterval(() => {
+    const side: Side = chantCycle % 2 === 0 ? "argentina" : "mexico";
+    const text = chantCycle % 2 === 0 ? "VAMOOOS!!" : "Dale dale dale";
+    emitCoordinatedChant(side, text);
+    chantCycle += 1;
+  }, 10_000);
+
+  setInterval(() => {
+    const joinedUser = mockUsersBySide.mexico.at(-1);
+    if (joinedUser) emitMockEvent(joinedUser, "¡VAMOS! No coordinación suficiente");
+  }, 7_000);
+}
+
+function addMockUser(index: number): void {
+  const side: Side = index % 2 === 0 ? "argentina" : "mexico";
+  const userName = `${side === "argentina" ? "Albi" : "Tri"}Fan${index + 1}`;
+  mockUsersBySide[side].push(userName);
+  emitMockEvent(userName, `!join ${side}`);
+}
+
+function emitCoordinatedChant(side: Side, text: string): void {
+  const group = mockUsersBySide[side].slice(-5);
+  if (group.length < 5) return;
+
+  for (const userName of group) emitMockEvent(userName, `!join ${side}`);
+  for (const userName of group) emitMockEvent(userName, text);
+}
+
+function emitMockEvent(userName: string, text: string): void {
+  const side: Side = userName.startsWith("Albi") ? "argentina" : "mexico";
+  const event: ChatEvent = {
+    userId: `mock-${userName.toLowerCase()}`,
+    userName,
+    text,
+    emotes: [],
+    badges: {
+      broadcaster: false,
+      moderator: Number(userName.replace(/\D/gu, "")) % 125 === 0,
+      subscriber: Number(userName.replace(/\D/gu, "")) % 3 === 0,
+    },
+    side,
+    timestamp: Date.now(),
+  };
+  chatEventBus.emit("chat", event);
 }
