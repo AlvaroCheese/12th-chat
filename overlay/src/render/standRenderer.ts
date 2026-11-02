@@ -84,7 +84,7 @@ const ENTER_ANIMATION_MS = 360;
 const LEAVE_ANIMATION_MS = 440;
 const SKIN_TONES = [0xffd7b5, 0xe9b38f, 0xc7835c, 0x9c6044, 0xf1c7a2, 0xb97754];
 const CONFETTI_POOL_SIZE = 160;
-const GOAL_ANIMATION_MS = 4_500;
+const GOAL_ANIMATION_MS = 12_000;
 
 export class StandRenderer {
   private readonly panel = new Graphics();
@@ -648,8 +648,8 @@ export class StandRenderer {
       if (goal && goal.endsAt > now && sprite.animationKind === undefined) {
         const elapsed = now - goal.startedAt;
         if (sprite.side === goal.side) {
-          const envelope = Math.max(0, 1 - elapsed / 1_400);
-          goalBounce = Math.abs(Math.sin(elapsed * 0.018 + sprite.bouncePhase)) * 25 * envelope;
+          const envelope = Math.max(0, 1 - elapsed / GOAL_ANIMATION_MS);
+          goalBounce = Math.abs(Math.sin(elapsed * 0.018 + sprite.bouncePhase)) * 36 * envelope;
           sprite.container.alpha = 1;
         } else {
           sprite.container.alpha = 0.48;
@@ -660,11 +660,11 @@ export class StandRenderer {
         sprite.container.alpha = 1 - (visuals?.moodDim ?? 0);
       }
       const chantBounce = activeChant
-        ? Math.abs(Math.sin(now * (0.008 + singing.intensity * 0.009) + sprite.bouncePhase)) * (2 + 8 * singing.intensity)
+        ? Math.abs(Math.sin(now * (0.003 + singing.intensity * 0.003) + sprite.bouncePhase)) * (1 + 3 * singing.intensity)
         : 0;
       const slump = goal && goal.endsAt > now && sprite.side !== goal.side ? 5 : 0;
       const moodEnergy = visuals?.moodEnergy ?? 0.45;
-      const idleFrequency = 0.002 + moodEnergy * 0.006;
+      const idleFrequency = 0.0008 + moodEnergy * 0.002;
       const idleBob = Math.sin(now * idleFrequency + sprite.bouncePhase) * (0.8 + moodEnergy * 4);
       const moodSlump = (1 - moodEnergy) * 4;
       if (!sprite.animationKind) {
@@ -683,7 +683,7 @@ export class StandRenderer {
   private setMoodTarget(visuals: SideVisuals, pressure: PressureState): void {
     visuals.targetPressure = Math.max(0, Math.min(1, pressure.value));
     visuals.targetMood = pressure.mood;
-    visuals.targetEnergy = pressure.mood === "cold" ? 0.08 : pressure.mood === "hot" ? 1 : 0.42;
+    visuals.targetEnergy = 0.08 + visuals.targetPressure * 0.42;
     visuals.targetDim = pressure.mood === "cold" ? 0.32 : 0;
     visuals.targetSeatVisibility = pressure.mood === "cold" ? 0.9 : pressure.mood === "hot" ? 0.22 : 0.38;
     visuals.targetMeterColor = pressure.mood === "cold" ? 0x5ba6c2 : pressure.mood === "hot" ? 0xff8d3b : 0x71ca93;
