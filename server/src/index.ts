@@ -1,9 +1,12 @@
 import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
 import { Server } from "socket.io";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { RefreshingAuthProvider } from "@twurple/auth";
 import { env } from "./config/env.js";
 import { chatEventBus } from "./chat/eventBus.js";
-import { startMockChat } from "./chat/mock.js";
+import { startMockChat, stopMockChat } from "./chat/mock.js";
 import { TwitchChatService } from "./twitch/chatService.js";
 import { FileTokenStore } from "./twitch/tokenStore.js";
 import { registerTwitchAuthRoutes } from "./routes/twitchAuth.js";
@@ -17,10 +20,11 @@ import { MatchStats } from "./chat/matchStats.js";
 import { generateCrowdReport } from "./ai/report.js";
 import { ReportStore } from "./ai/reportStore.js";
 import { registerReportRoutes } from "./routes/report.js";
+import { runDemoScript, stopDemoScript } from "./demo/script.js";
 
 const app = Fastify({
   logger: {
-    level: "debug",
+    level: "info",
     serializers: {
       req(request) {
         return { method: request.method, url: request.url.split("?")[0] };
@@ -37,45 +41,52 @@ const authProvider = new RefreshingAuthProvider({
 });
 const chatService = new TwitchChatService(authProvider, tokenStore);
 const mockChatEnabled = env.MOCK_CHAT === "1";
+const demoCrowdEnabled = env.DEMO_CROWD === "1";
+const mockCrowdEnabled = mockChatEnabled || demoCrowdEnabled;
 const standStore = new StandStore(getFanInactivityTimeoutMs(mockChatEnabled));
-const chantDetector = new ChantDetector(standStore, getChantConfig(mockChatEnabled));
+const chantDetector = new ChantDetector(standStore, getChantConfig(mockCrowdEnabled));
 const goalController = new GoalController(standStore);
-const pressureMeter = new PressureMeter(getPressureConfig(mockChatEnabled));
+const pressureMeter = new PressureMeter(getPressureConfig(mockCrowdEnabled));
 const matchStats = new MatchStats();
 const reportStore = new ReportStore();
 await reportStore.load();
 let mockMatchTimer: NodeJS.Timeout | undefined;
 let reportInProgress = false;
 let matchGeneration = 0;
-const standAggregator = new StandAggregator(io, standStore, pressureMeter, (snapshot) => {
-  app.log.debug(
-    {
-      fans: snapshot.fans.length,
-      argentina: snapshot.counts.argentina,
-      mexico: snapshot.counts.mexico,
-      argentinaPressure: snapshot.pressure.argentina.value,
-      mexicoPressure: snapshot.pressure.mexico.value,
-    },
-    "StandState snapshot emitted",
-  );
-}, (snapshot, now) => matchStats.recordSnapshot(snapshot, now));
+let matchFrozen = false;
+const standAggregator = new StandAggregator(io, standStore, pressureMeter, undefined, (snapshot, now) =>
+  matchStats.recordSnapshot(snapshot, now),
+);
 standStore.onMemberChange((change) => matchStats.recordMemberChange(change));
 
 function startMatchStats(): void {
+  stopDemoScript();
   matchGeneration += 1;
+  matchFrozen = false;
+  standStore.setFrozen(false);
+  pressureMeter.setFrozen(false);
+  standAggregator.setFrozen(false);
   if (mockMatchTimer) clearTimeout(mockMatchTimer);
   mockMatchTimer = undefined;
   reportInProgress = false;
   matchStats.start();
+  if (mockCrowdEnabled) startMockChat();
   if (mockChatEnabled) {
     mockMatchTimer = setTimeout(() => void finishMatch(), env.MOCK_MATCH_DURATION_MINUTES * 60_000);
   }
+  io.emit("matchStarted", { scoreBySide: standStore.createSnapshot().scoreBySide });
 }
 
 async function finishMatch(): Promise<void> {
   if (!matchStats.isActive || reportInProgress) return;
   reportInProgress = true;
   const generation = matchGeneration;
+  matchFrozen = true;
+  standStore.setFrozen(true);
+  pressureMeter.setFrozen(true);
+  standAggregator.setFrozen(true);
+  stopMockChat();
+  stopDemoScript();
   if (mockMatchTimer) clearTimeout(mockMatchTimer);
   mockMatchTimer = undefined;
   const finalState = standStore.createSnapshot();
@@ -107,11 +118,34 @@ registerTwitchAuthRoutes(app, authProvider, chatService, tokenStore);
 registerControlRoutes(app, goalController, standStore, (side, scoreBySide) => {
   pressureMeter.boost(side, "goal");
   io.emit("goal", { side, scoreBySide });
-}, startMatchStats, finishMatch);
+}, startMatchStats, finishMatch, () => {
+    runDemoScript({
+      startMatch: () => {
+        goalController.start();
+        startMatchStats();
+        stopMockChat();
+      },
+      goal: (side) => {
+        const goal = goalController.goal(side);
+        if (!goal) return;
+        pressureMeter.boost(side, "goal");
+        io.emit("goal", goal);
+      },
+      endMatch: finishMatch,
+    });
+  }, () => matchFrozen);
 registerReportRoutes(app, reportStore);
+
+if (env.NODE_ENV === "production") {
+  const overlayRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../overlay/dist");
+  await app.register(fastifyStatic, { root: overlayRoot, prefix: "/", wildcard: false, index: false });
+  app.get("/", async (_request, reply) => reply.sendFile("index.html"));
+}
 
 chatEventBus.on("chat", (event) => {
   const privileged = event.badges.broadcaster || event.badges.moderator;
+  const startsMatch = /^\s*!start\s*$/i.test(event.text);
+  if (matchFrozen && (!privileged || !startsMatch)) return;
   if (!privileged && /^\s*!goal\b/i.test(event.text)) return;
   if (!privileged && /^\s*!end\b/i.test(event.text)) return;
   if (privileged && /^\s*!goal\b/i.test(event.text)) {
@@ -146,13 +180,17 @@ chatEventBus.on("chat", (event) => {
   console.info(`[chat] ${event.userName}: ${safeText}`);
 });
 
-app.log.info(`Mock chat ${mockChatEnabled ? "enabled" : "disabled"}`);
+app.log.info(`Mock chat ${mockChatEnabled ? "enabled" : "disabled"}; demo crowd ${demoCrowdEnabled ? "enabled" : "disabled"}`);
 
 if (mockChatEnabled) {
   goalController.start();
-  startMatchStats();
   startMockChat();
-} else if (env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET) {
+  startMatchStats();
+} else {
+  if (demoCrowdEnabled) startMockChat();
+}
+
+if (!mockChatEnabled && env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET) {
   try {
     const channel = await chatService.restore();
     if (channel) console.info(`Restored Twitch chat connection for ${channel}`);

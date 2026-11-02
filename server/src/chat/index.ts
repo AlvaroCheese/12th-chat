@@ -15,5 +15,6 @@ export function normalizeChatMessage(event: EventSubChannelChatMessageEvent): Ch
       subscriber: event.hasBadge("subscriber"),
     },
     timestamp: Date.now(),
+    source: "twitch",
   };
 }

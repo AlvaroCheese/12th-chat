@@ -1,5 +1,5 @@
 import { createScene } from "./render/scene.js";
-import { connectToServer } from "./net/socket.js";
+import { connectMatchLifecycle, connectToServer } from "./net/socket.js";
 import { startMockMode } from "./mock/index.js";
 import { setStandState, subscribeToStandState } from "./state/index.js";
 
@@ -14,18 +14,20 @@ async function startOverlay(host: HTMLElement): Promise<void> {
   const renderer = await createScene(host, query.get("mute") === "1", query.get("debug") === "1");
   subscribeToStandState((state) => renderer.update(state));
   if (query.get("mock") === "1") {
-    startMockMode(
+    const localMock = startMockMode(
       setStandState,
       (chant) => renderer.playChant(chant),
       (goal) => renderer.playGoal(goal),
       (event) => renderer.playMatchEnded(event),
     );
+    connectMatchLifecycle((event) => localMock.finish(event), (event) => localMock.restart(event));
   } else {
     connectToServer(
       setStandState,
       (chant) => renderer.playChant(chant),
       (goal) => renderer.playGoal(goal),
       (event) => renderer.playMatchEnded(event),
+      (event) => renderer.playMatchStarted(event),
     );
   }
 }

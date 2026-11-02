@@ -12,6 +12,7 @@ export function isMockPressureActive(side: Side, now = Date.now()): boolean {
 }
 
 export class PressureMeter {
+  private frozen = false;
   private readonly events: Record<Side, number[]> = { argentina: [], mexico: [] };
   private readonly boosts: Record<Side, { value: number; endsAt: number; durationMs: number }> = {
     argentina: { value: 0, endsAt: 0, durationMs: 0 },
@@ -23,6 +24,10 @@ export class PressureMeter {
   };
 
   constructor(private readonly config: PressureConfig) {}
+
+  setFrozen(frozen: boolean): void {
+    this.frozen = frozen;
+  }
 
   recordMessage(side: Side, now = Date.now()): void {
     this.events[side].push(now);
@@ -37,6 +42,7 @@ export class PressureMeter {
   }
 
   update(now: number, counts: Record<Side, number>): Record<Side, PressureState> {
+    if (this.frozen) return { argentina: { ...this.state.argentina }, mexico: { ...this.state.mexico } };
     for (const side of ["argentina", "mexico"] as const) {
       const events = this.events[side];
       while (events[0] !== undefined && events[0] <= now - this.config.windowMs) events.shift();

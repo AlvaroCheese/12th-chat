@@ -1,98 +1,119 @@
 # twitch-graderia
 
-An OBS browser overlay that turns Twitch chat into a football stadium crowd. Viewers choose a side, chant, and react; the streamer triggers goals, and an AI generates a crowd report.
+## Make the crowd the show
 
-## Structure and stack
+Twitch lost the World Cup co-watching wave, and streamers cannot show the match itself. twitch-graderia turns that limitation into the spectacle: viewers pick a side, chant and react, while a transparent OBS overlay turns chat into a football stadium. The streamer triggers goals, and the final whistle produces a crowd report.
 
-- `overlay/` — Vite, TypeScript, PixiJS, and Socket.IO client for the transparent OBS overlay
-- `server/` — Node.js 20, Fastify, Socket.IO, and Twurple EventSub
-- `shared/` — TypeScript types shared by the overlay and server
+## Features
 
-## Install
+- Live Twitch chat through OAuth and EventSub, plus credential-free mock chat.
+- Argentina and Mexico stands with up to 300 individual fans, crowd overflow, chants, goals and a live pressure meter.
+- A shareable post-match report at /report, generated from match statistics with OpenAI or a local template.
+- A deterministic 2.5-minute demo script and an optional simulated crowd alongside real Twitch chat.
 
-```sh
-npm install
-```
+## Architecture
 
-## Server environment
+    Twitch EventSub ─┐
+                     ├─> Fastify + Socket.IO ──> Shared types ──> PixiJS OBS overlay
+    Demo / mock ─────┘          │
+                                ├─ in-memory stand and match statistics
+                                └─ OpenAI (aggregates only) ──> /report card
 
-Copy `.env.example` to `.env`. The server reads these values:
+## Stack
 
-| Variable | Value |
-| --- | --- |
-| `TWITCH_CLIENT_ID` | Twitch app client ID; leave empty for mock mode |
-| `TWITCH_CLIENT_SECRET` | Twitch app secret; leave empty for mock mode |
-| `TWITCH_REDIRECT_URI` | OAuth callback URL; defaults to `http://localhost:3000/auth/twitch/callback` |
-| `OPENAI_API_KEY` | Optional; without it the crowd report uses a local template |
-| `OPENAI_MODEL` | Optional; defaults to `gpt-4.1-mini` |
-| `REPORT_LANGUAGE` | Optional; report language code, defaults to `es` |
-| `REPORT_TIMEOUT_MS` | Optional; OpenAI request limit, defaults to `15000` |
-| `PORT` | Server port; defaults to `3000` |
-| `MOCK_CHAT` | Set to `1` for mock chat, `0` for Twitch mode; mock match auto-ends after its configured duration |
-| `MOCK_MATCH_DURATION_MINUTES` | Optional; mock match duration, defaults to `3` |
-| `CONTROL_TOKEN` | Optional bearer token for `/control` actions; without it, control actions are localhost-only |
+- npm workspaces and TypeScript: overlay, server, shared
+- Overlay: Vite, PixiJS, Socket.IO client; plain TypeScript
+- Server: Node.js 20, Fastify, Socket.IO, Twurple EventSub, OpenAI SDK
+- Tests: Vitest
+
+## Quick start for judges
+
+1. Install Node.js 20 and clone this repository.
+2. Install dependencies:
+
+       npm install
+
+3. Copy .env.example to .env and set MOCK_CHAT=1. No Twitch or OpenAI credentials are needed for the demo.
+4. In terminal one, run:
+
+       npm run dev:server
+
+5. In terminal two, run npm run dev:overlay, then open the Vite URL printed in that terminal. The server fills the stand with simulated chat and ends the mock match after three minutes.
+
+To run the overlay-only mock instead, open the Vite URL with ?mock=1. To run the scripted story, open http://localhost:3000/control and choose **Run demo script**; it fills the stand, stages chants and a quiet phase, scores once for each side, then generates a report.
+
+## Chat commands
+
+| Command | Who can use it | Result |
+| --- | --- | --- |
+| !join argentina / !join mexico | Anyone | Join or switch sides |
+| !leave | Anyone | Leave the stand |
+| !goal <side> | Broadcaster or moderator | Trigger a goal |
+| !start | Broadcaster or moderator | Start a new match and reset its score |
+| !end | Broadcaster or moderator | Freeze the stand and generate the report |
+
+## Control page
+
+Open http://localhost:3000/control for goal buttons, score, **Restart match / mock crowd**, **END MATCH**, and **Run demo script**. Set CONTROL_TOKEN to protect control actions. In development, control requests without a token are accepted from localhost; production requires the token.
 
 ## Connect Twitch
 
-1. Register an application at the [Twitch Developer Console](https://dev.twitch.tv/console/apps). Set the OAuth redirect URL to `http://localhost:3000/auth/twitch/callback` for local development and choose the **Confidential** client type.
-2. Copy `.env.example` to `.env` and set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET`. Set `TWITCH_REDIRECT_URI` to the exact redirect URL registered in the console.
-3. Start the server with `npm run dev:server`.
-4. Open [http://localhost:3000/auth/twitch](http://localhost:3000/auth/twitch) and authorize the app. The server then listens to the authenticated channel's chat. Check `http://localhost:3000/auth/status` for connection status.
+Create a **Confidential** app in the [Twitch Developer Console](https://dev.twitch.tv/console/apps), register the callback URL, set TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, and TWITCH_REDIRECT_URI, then restart the server and open /auth/twitch. Twitch accepts HTTP redirect URLs only for localhost; other hosts require HTTPS, such as a Cloudflare Tunnel or ngrok URL registered in the console.
 
-Twitch accepts HTTP redirect URLs only for `localhost`; any other host requires HTTPS, for example through Cloudflare Tunnel or ngrok. Register that HTTPS callback URL in the Twitch Developer Console and set the same URL in `TWITCH_REDIRECT_URI`.
+For a real Twitch demo with a fuller stand, set DEMO_CROWD=1 and leave MOCK_CHAT=0. The server runs the simulated crowd, chants and churn alongside the restored Twitch EventSub connection. Real Twitch commands operate on the same stand. Simulated events carry an explicit mock source and demo-sim- IDs; their display names are excluded from the report MVP field.
 
-OAuth tokens are stored locally under `data/` and refreshed automatically. Keep `.env` and the token file private. `OPENAI_API_KEY` remains optional. With a key, the report uses OpenAI structured output; without one or when the request fails, the server creates a template report. The API receives bounded match aggregates, top chant text, and the MVP display name only; it never receives chat history or user IDs. Report text passes through the text filter before it is saved or displayed.
+## OBS Browser Source
 
-## Mock mode
+Add a **Browser Source** and set its URL to the overlay URL, for example http://localhost:5173/ during development. Set width to **1920** and height to **1080**. The overlay canvas and page background are transparent. Add ?mute=1 to silence procedural sound; add ?debug=1 to show pressure and mood.
 
-Set `MOCK_CHAT=1` in `.env` and run `npm run dev:server`. The mock generates 500 initial joiners, ongoing arrivals, departures, side switches, isolated messages, coordinated chants, and a blocked example without Twitch. Set `MOCK_CHAT=0` to use Twitch.
+## Environment variables
 
-## Run the overlay
+Copy .env.example to .env. Empty credentials are safe for mock mode.
 
-Run `npm run dev:overlay` in a separate terminal and open the Vite URL shown. In the connected overlay, type `!join argentina` or `!join mexico` in chat. The command accepts either side ID or display name, regardless of capitalization; joining the other side switches that user over. Type `!leave` to leave the stand.
+| Variable | Purpose |
+| --- | --- |
+| PORT | HTTP and Socket.IO port; default 3000 |
+| NODE_ENV | Use production for the single-service deployment |
+| TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET | Twitch confidential app credentials |
+| TWITCH_REDIRECT_URI | OAuth callback; defaults to localhost |
+| OPENAI_API_KEY | Optional; template reports work without it |
+| OPENAI_MODEL | Optional report model; defaults to gpt-4.1-mini |
+| REPORT_LANGUAGE | Optional report language; defaults to es |
+| REPORT_TIMEOUT_MS | Optional API timeout; defaults to 15000 |
+| CONTROL_TOKEN | Optional locally, required in production |
+| MOCK_CHAT | 1 runs an offline server mock match; default 0 |
+| DEMO_CROWD | 1 adds simulated viewers while Twitch is connected; default 0 |
+| MOCK_MATCH_DURATION_MINUTES | Offline mock match length; default 3 |
 
-Fans leave after 120 seconds without a chat message (30 seconds in server mock mode). Empty seats are reused without moving other fans. Server mock snapshots include stable seats and animate arrivals and departures.
+## AI report privacy
 
-## Chants
+The report API receives bounded match aggregates, repeated chant fragments, and at most one MVP display name. It does not receive user IDs or full chat history. Simulated display names are omitted from the MVP field. Generated report text is filtered before saving and display. OPENAI_API_KEY is optional; with no key, the server writes a local template report.
 
-Five distinct joined viewers from the same side must send the same chant within 8 seconds in live mode. Chants are normalized before comparison, so `VAMOOOS!!` and `vamos` match. A side/text pair has a 10-second cooldown and singing lasts 6 seconds; ongoing messages can extend it. Mock mode uses 3 users, a 4-second window and cooldown, and a 5-second duration. Thresholds are in [server/src/config/chants.ts](./server/src/config/chants.ts).
+## Tests and checks
 
-Chant text is filtered before delivery: URLs are stripped, text over 60 characters and repeated symbol spam are rejected, and phrases in [server/src/chat/blocklist.json](./server/src/chat/blocklist.json) are blocked. Add normalized phrases to that JSON file to extend the blocklist. AI moderation is a future hook and is not active yet.
+    npm test
+    npm run typecheck
+    npm run lint
+    npm run build
 
-The overlay uses procedural crowd noise. Add `?mute=1` to disable it. In OBS, you can also control the browser source audio in the source's audio settings.
+## Deployment
 
-## Test chants and stand life
+Deploy the repository as one Node 20 service on Railway or Render. The Dockerfile builds the workspaces and serves the Vite overlay from Fastify when NODE_ENV=production. Configure CONTROL_TOKEN, PORT (provided by the host), and Twitch credentials in the host's secret-variable settings; do not bake secrets into the image. Register the deployment's HTTPS /auth/twitch/callback URL in the Twitch console and set the same value as TWITCH_REDIRECT_URI. Most hosts do not persist data/, so a redeploy can remove local OAuth tokens and reports; the streamer may need to reconnect at /auth/twitch.
 
-- **Server mock:** set `MOCK_CHAT=1`, run `npm run dev:server`, then `npm run dev:overlay` in another terminal. Open the Vite URL without `?mock=1`. Watch for coordinated chants, filtered text, user churn, reused seats, and changing counters.
-- **Overlay-only mock:** open the Vite URL with `?mock=1` to simulate joins, leaves, switches, chants, and banners locally. Add `&mute=1` to silence procedural audio.
-- **Twitch:** connect the streamer, type `!join argentina` or `!join mexico`, coordinate the same chant across at least five distinct joined viewers, then use `!leave` or wait 120 seconds without chat activity.
+## Roadmap
 
-## Goals and control page
+- Twitch Extension for individual viewer actions and Bits
+- VAR vote
+- Away fans on raids
+- Collaborative tifo
+- Penalty mode
 
-The broadcaster or a moderator can type `!goal argentina` or `!goal mexico` to trigger a celebration; side names are case-insensitive and each side has a three-second cooldown. `!start` resets the score and match statistics. `!end` ends the match and creates the crowd report. Visit [http://localhost:3000/control](http://localhost:3000/control) for GOAL buttons, the current score, Reset score / start match, and END MATCH. Set `CONTROL_TOKEN` in `.env` to require a token for control actions; the page prompts once and keeps it in memory. With no token configured, only localhost requests can control the match.
+## How Codex was used
 
-When `MOCK_CHAT=1`, the server periodically triggers a goal. The overlay-only `?mock=1` mode also simulates goals locally. To test a goal immediately, use the `/control` page or send `!goal argentina` as a moderator in Twitch chat; use `!start` or the reset button to clear the score.
+Codex helped build the project milestone by milestone: repository skeleton, Twitch chat, stand and chants, goals, pressure, the AI crowd report, and demo/deployment readiness. Project instructions and feature boundaries are documented in [AGENTS.md](./AGENTS.md) and [FEATURES.md](./FEATURES.md).
 
-## AI crowd report
+## Project links
 
-Start a match with `!start` as the broadcaster/moderator, or use **Reset score / start match** in `/control`. End it with `!end` or **END MATCH**. The overlay shows FULL TIME while the report is generated, then links to `/report`. The shareable report card is available at [http://localhost:3000/report](http://localhost:3000/report), and its JSON is at `/api/report`. It includes the final score, peak crowd per side, average pressure and loudest side, busiest minute, repeated chants, MVP fan, and join/leave/switch totals. Download a PNG or copy the report link from the card.
+Codex Session ID: PENDING
 
-Set `OPENAI_API_KEY` to enable AI-written text. `OPENAI_MODEL`, `REPORT_LANGUAGE`, and `REPORT_TIMEOUT_MS` tune the model, language, and request timeout; they have safe defaults. If the key is blank or the API is unavailable, a local template report is still saved. In server mock mode, a match starts automatically and ends after `MOCK_MATCH_DURATION_MINUTES` (default 3), so the complete report flow can be demoed without Twitch. Overlay-only `?mock=1` shows a local FULL TIME and report-ready simulation after three minutes.
-
-To test quickly, run with `MOCK_CHAT=1` and `MOCK_MATCH_DURATION_MINUTES=1`, start the overlay without `?mock=1`, then wait for auto-end or click END MATCH in `/control`. Open `/report` after the overlay announces it is ready. Alternatively use `?mock=1` for the overlay-only local simulation.
-
-## Pressure and mood
-
-The server counts non-command messages from joined viewers over a rolling window, normalizes activity by the side's fan count with a floor for small stands, then smooths it into a 0–1 pressure score. Mood uses hysteresis: cold below about 0.2, hot above about 0.72, and calm between them. Chants and goals provide short pressure boosts. Shared tuning values live in [shared/src/pressureConfig.ts](./shared/src/pressureConfig.ts) and are applied by [server/src/chat/pressure.ts](./server/src/chat/pressure.ts): live mode uses a 10-second window and 0.2 smoothing; mock mode reacts faster with a 2.5-second window and 0.55 smoothing. Both sides cycle through about 20 seconds of activity and 15 seconds of quiet with an offset between them.
-
-The pressure bar fills smoothly and changes color with mood. Cold stands slump and show empty seats more clearly; hot stands bob more energetically. Add `?debug=1` to the overlay URL to show each side's current pressure and mood as text.
-
-To test locally, run the server with `MOCK_CHAT=1` and the overlay without `?mock=1`, or open the overlay-only mock with `?mock=1&debug=1`. Watch one side enter its quiet phase while the offset side stays active, then recover on the next activity phase. Mock goals continue alternating between Argentina and Mexico.
-
-## Features and milestones
-
-See [FEATURES.md](./FEATURES.md) for the feature list and milestone plan.
-
-Codex Session ID: **PENDING**
-
-Demo: **PENDING**
+Demo video: PENDING

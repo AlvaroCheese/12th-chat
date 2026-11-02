@@ -31,6 +31,7 @@ export interface ChatEvent {
   };
   side?: Side;
   timestamp: number;
+  source?: "twitch" | "mock";
 }
 
 export interface StandState {
@@ -106,9 +107,14 @@ export interface MatchEndedEvent {
   source?: CrowdReport["source"];
 }
 
+export interface MatchStartedEvent {
+  scoreBySide: Record<Side, number>;
+}
+
 export type ServerToOverlayMessage =
   | { type: "stand:update"; state: StandState }
   | { type: "chant"; chant: ChantEvent }
   | { type: "goal"; goal: GoalEvent }
   | { type: "matchEnded"; event: MatchEndedEvent }
+  | { type: "matchStarted"; event: MatchStartedEvent }
   | { type: "match:end"; report: string };

@@ -8,7 +8,7 @@ An OBS browser overlay that turns Twitch chat into a football stadium crowd. Vie
 
 - TypeScript across npm workspaces: `overlay`, `server`, and `shared`
 - Overlay: Vite, PixiJS, Socket.IO client; plain TypeScript
-- Server: Node.js 20, Fastify, Socket.IO, Twurple packages (not wired during M0)
+- Server: Node.js 20, Fastify, Socket.IO, Twurple EventSub
 - Shared: TypeScript types consumed by both applications
 
 ## Commands
@@ -19,12 +19,16 @@ An OBS browser overlay that turns Twitch chat into a football stadium crowd. Vie
 - `npm run build`
 - `npm run lint`
 - `npm run typecheck`
+- `npm test`
+- `npm start` (built production server)
 
 ## Folder map
 
 - `overlay/` — OBS browser overlay and PixiJS renderer
 - `server/` — HTTP/socket server and future service modules
 - `shared/` — types shared by overlay and server
+- `server/src/demo/` — deterministic demo script
+- `server/src/config/demo.ts` — demo timeline tuning
 - `FEATURES.md` — feature definitions and milestone plan
 
 Features and milestones live in `FEATURES.md`. We work on **one milestone at a time**.

@@ -30,12 +30,17 @@ interface LocalMember extends Fan {
   joinedAt: number;
 }
 
+export interface LocalMockController {
+  restart(event?: { scoreBySide: Record<Side, number> }): void;
+  finish(event: MatchEndedEvent): void;
+}
+
 export function startMockMode(
   setState: (state: StandState) => void,
   onChant: (chant: ChantEvent) => void,
   onGoal: (goal: GoalEvent) => void,
   onMatchEnded: (event: MatchEndedEvent) => void,
-): void {
+): LocalMockController {
   console.info("Overlay mock mode enabled with churn and chant simulation");
   const users = new Map<string, LocalMember>();
   const occupiedSeats: Record<Side, Map<number, string>> = { argentina: new Map(), mexico: new Map() };
@@ -68,13 +73,9 @@ export function startMockMode(
   let lastGoalAt = Date.now() + 6_000;
   let goalCycle = 0;
   let matchEnded = false;
-  const mockMatchTimer = window.setTimeout(() => {
-    if (matchEnded) return;
-    matchEnded = true;
-    const finalScore = { ...scoreBySide };
-    onMatchEnded({ status: "generating", finalScoreBySide: finalScore, reportUrl: "/report" });
-    window.setTimeout(() => onMatchEnded({ status: "ready", finalScoreBySide: finalScore, reportUrl: "/report", source: "template" }), 650);
-  }, 180_000);
+  let interval: number | undefined;
+  let mockMatchTimer: number | undefined;
+  let readyTimer: number | undefined;
   const scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
 
   for (let index = 0; index < INITIAL_USERS; index += 1) {
@@ -86,7 +87,7 @@ export function startMockMode(
   }
   promoteWaiting(users, occupiedSeats, joinedIds, recentJoins);
 
-  const interval = window.setInterval(() => {
+  const tick = () => {
     const now = Date.now();
 
     for (const [userId, member] of users) {
@@ -179,9 +180,58 @@ export function startMockMode(
     setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing, scoreBySide, pressure));
     joinedIds.clear();
     leftIds.clear();
-  }, 250);
+  };
 
-  window.addEventListener("beforeunload", () => { window.clearInterval(interval); window.clearTimeout(mockMatchTimer); }, { once: true });
+  const stopTimer = () => {
+    if (interval !== undefined) window.clearInterval(interval);
+    if (mockMatchTimer !== undefined) window.clearTimeout(mockMatchTimer);
+    if (readyTimer !== undefined) window.clearTimeout(readyTimer);
+    interval = undefined;
+    mockMatchTimer = undefined;
+    readyTimer = undefined;
+  };
+
+  const finish = (event?: MatchEndedEvent) => {
+    if (event?.status === "ready") {
+      matchEnded = true;
+      stopTimer();
+      onMatchEnded(event);
+      return;
+    }
+    if (matchEnded) return;
+    matchEnded = true;
+    stopTimer();
+    if (event) {
+      onMatchEnded(event);
+      return;
+    }
+    const finalScore = { ...scoreBySide };
+    onMatchEnded({ status: "generating", finalScoreBySide: finalScore, reportUrl: "/report" });
+    readyTimer = window.setTimeout(() => onMatchEnded({ status: "ready", finalScoreBySide: finalScore, reportUrl: "/report", source: "template" }), 650);
+  };
+
+  const start = () => {
+    stopTimer();
+    matchEnded = false;
+    scoreBySide.argentina = 0;
+    scoreBySide.mexico = 0;
+    const now = Date.now();
+    lastWaveAt = now;
+    lastActivityAt = now;
+    lastLeaveAt = now;
+    lastSwitchAt = now;
+    lastChantAt = now + 2_000;
+    lastIsolatedAt = now + 800;
+    lastGoalAt = now + 6_000;
+    setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing, scoreBySide, pressure));
+    interval = window.setInterval(tick, 250);
+    mockMatchTimer = window.setTimeout(() => finish(), 180_000);
+  };
+
+  start();
+
+  window.addEventListener("beforeunload", stopTimer, { once: true });
+  return { restart: (event) => { start(); if (event) { scoreBySide.argentina = event.scoreBySide.argentina; scoreBySide.mexico = event.scoreBySide.mexico; } }, finish };
 }
 
 function handleLocalMessage(

@@ -10,6 +10,7 @@ export class StandAggregator {
   private lastPressure: Record<Side, PressureState> | undefined;
   private timer: NodeJS.Timeout | undefined;
   private readonly baselineSocketIds = new Set<string>();
+  private frozen = false;
 
   constructor(
     private readonly io: Server,
@@ -30,6 +31,10 @@ export class StandAggregator {
     this.timer = undefined;
   }
 
+  setFrozen(frozen: boolean): void {
+    this.frozen = frozen;
+  }
+
   sendTo(socket: Socket): void {
     const now = Date.now();
     this.store.expireInactive(now);
@@ -45,6 +50,7 @@ export class StandAggregator {
   }
 
   private publishIfChanged(): void {
+    if (this.frozen) return;
     const now = Date.now();
     this.store.expireInactive(now);
     this.store.expireSinging(now);

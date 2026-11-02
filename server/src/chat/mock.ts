@@ -9,11 +9,15 @@ let switchCursor = 12;
 let mockGoalCycle = 0;
 let pressureActivityCursor = 0;
 const pressureMockConfig = getPressureConfig(true);
+const timers: NodeJS.Timeout[] = [];
+let mockChatRunning = false;
 
 export function startMockChat(): void {
+  if (mockChatRunning) return;
+  mockChatRunning = true;
   console.info("Mock chat generator started (500 initial joiners with continuous churn)");
 
-  const initialJoinTimer = setInterval(() => {
+  const initialJoinTimer = scheduleInterval(() => {
     for (let count = 0; count < 10 && nextUserIndex < 500; count += 1) {
       addMockUser(nextUserIndex);
       nextUserIndex += 1;
@@ -22,14 +26,14 @@ export function startMockChat(): void {
     if (nextUserIndex >= 500) clearInterval(initialJoinTimer);
   }, 50);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     for (let count = 0; count < 20; count += 1) {
       addMockUser(nextUserIndex);
       nextUserIndex += 1;
     }
   }, 4_500);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     for (let count = 0; count < 10; count += 1) {
       const side: Side = count % 2 === 0 ? "argentina" : "mexico";
       const visibleCandidates = mockUsersBySide[side].slice(0, 150);
@@ -39,7 +43,7 @@ export function startMockChat(): void {
     }
   }, 8_000);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     const currentSide: Side = switchCursor % 2 === 0 ? "argentina" : "mexico";
     const otherSide: Side = currentSide === "argentina" ? "mexico" : "argentina";
     const userName = mockUsersBySide[currentSide][switchCursor % Math.max(mockUsersBySide[currentSide].length, 1)];
@@ -47,31 +51,31 @@ export function startMockChat(): void {
     switchCursor += 7;
   }, 6_500);
 
-  setTimeout(() => {
+  scheduleTimeout(() => {
     const joinedUser = mockUsersBySide.argentina[0];
     if (joinedUser) emitMockEvent(joinedUser, "blocked placeholder chant");
   }, 1_500);
 
   let chantCycle = 0;
-  setInterval(() => {
+  scheduleInterval(() => {
     const side: Side = chantCycle % 2 === 0 ? "argentina" : "mexico";
     const text = chantCycle % 2 === 0 ? "VAMOOOS!!" : "Dale dale dale";
     emitCoordinatedChant(side, text);
     chantCycle += 1;
   }, 10_000);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     const joinedUser = mockUsersBySide.mexico.at(-1);
     if (joinedUser) emitMockEvent(joinedUser, "¡VAMOS! No coordinación suficiente");
   }, 7_000);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     const side: Side = mockGoalCycle % 2 === 0 ? "argentina" : "mexico";
     emitMockEvent(side === "argentina" ? "AlbiFan125" : "TriFan250", `!goal ${side}`);
     mockGoalCycle += 1;
   }, 18_000);
 
-  setInterval(() => {
+  scheduleInterval(() => {
     for (const side of ["argentina", "mexico"] as const) {
       if (!isMockPressureActive(side, Date.now())) continue;
       const candidates = mockUsersBySide[side].slice(-100);
@@ -82,6 +86,29 @@ export function startMockChat(): void {
       }
     }
   }, pressureMockConfig.mockBurstIntervalMs);
+}
+
+export function stopMockChat(): void {
+  if (!mockChatRunning) return;
+  mockChatRunning = false;
+  for (const timer of timers) {
+    clearInterval(timer);
+    clearTimeout(timer);
+  }
+  timers.length = 0;
+  console.info("Mock chat generator paused");
+}
+
+function scheduleInterval(callback: () => void, delayMs: number): NodeJS.Timeout {
+  const timer = setInterval(callback, delayMs);
+  timers.push(timer);
+  return timer;
+}
+
+function scheduleTimeout(callback: () => void, delayMs: number): NodeJS.Timeout {
+  const timer = setTimeout(callback, delayMs);
+  timers.push(timer);
+  return timer;
 }
 
 function addMockUser(index: number): void {
@@ -113,6 +140,7 @@ function emitMockEvent(userName: string, text: string): void {
     },
     side,
     timestamp: Date.now(),
+    source: "mock",
   };
   chatEventBus.emit("chat", event);
 }

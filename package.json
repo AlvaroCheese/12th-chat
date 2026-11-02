@@ -2,20 +2,28 @@
   "name": "twitch-graderia",
   "private": true,
   "type": "module",
-  "workspaces": ["overlay", "server", "shared"],
+  "workspaces": [
+    "overlay",
+    "server",
+    "shared"
+  ],
   "scripts": {
     "dev:server": "npm run build --workspace=shared && npm run dev --workspace=server",
     "dev:overlay": "npm run build --workspace=shared && npm run dev --workspace=overlay",
+    "start": "node server/dist/index.js",
     "build": "npm run build --workspace=shared && npm run build --workspace=server && npm run build --workspace=overlay",
     "lint": "eslint .",
-    "typecheck": "npm run typecheck --workspace=shared && npm run typecheck --workspace=server && npm run typecheck --workspace=overlay"
+    "typecheck": "npm run typecheck --workspace=shared && npm run typecheck --workspace=server && npm run typecheck --workspace=overlay",
+    "test": "vitest run"
   },
+  "engines": { "node": ">=20 <21" },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.46.4"
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^3.2.4"
   }
 }

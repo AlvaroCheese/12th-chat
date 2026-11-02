@@ -7,6 +7,7 @@ import type { GoalController } from "../match/goalController.js";
 import type { StandStore } from "../aggregator/standStore.js";
 
 const goalBody = z.object({ side: z.enum(["argentina", "mexico"]) });
+const requestBuckets = new Map<string, { startedAt: number; count: number }>();
 
 export function registerControlRoutes(
   app: FastifyInstance,
@@ -15,18 +16,23 @@ export function registerControlRoutes(
   emitGoal: (side: Side, scoreBySide: Record<Side, number>) => void,
   onStart?: () => void,
   onEnd?: () => Promise<void> | void,
+  onDemo?: () => void,
+  isMatchFrozen?: () => boolean,
 ): void {
   app.get("/control", async (_request, reply) => {
     return reply.type("text/html; charset=utf-8").send(controlPage(Boolean(env.CONTROL_TOKEN)));
   });
 
   app.get("/control/score", async (request, reply) => {
+    if (!rateLimit(request, reply, "score", 90)) return;
     if (!authorized(request)) return reply.code(401).send({ error: "Control authorization required" });
     return { scoreBySide: standStore.createSnapshot().scoreBySide };
   });
 
   app.post<{ Body: unknown }>("/control/goal", async (request, reply) => {
+    if (!rateLimit(request, reply, "goal", 15)) return;
     if (!authorized(request)) return reply.code(401).send({ error: "Control authorization required" });
+    if (isMatchFrozen?.()) return reply.code(409).send({ error: "The match has ended; start a new match first" });
     const parsed = goalBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "side must be argentina or mexico" });
     const goal = goalController.goal(parsed.data.side);
@@ -36,6 +42,7 @@ export function registerControlRoutes(
   });
 
   app.post("/control/start", async (request, reply) => {
+    if (!rateLimit(request, reply, "start", 8)) return;
     if (!authorized(request)) return reply.code(401).send({ error: "Control authorization required" });
     const scoreBySide = goalController.start();
     onStart?.();
@@ -43,8 +50,16 @@ export function registerControlRoutes(
   });
 
   app.post("/control/end", async (request, reply) => {
+    if (!rateLimit(request, reply, "end", 8)) return;
     if (!authorized(request)) return reply.code(401).send({ error: "Control authorization required" });
     await onEnd?.();
+    return { ok: true };
+  });
+
+  app.post("/control/demo", async (request, reply) => {
+    if (!rateLimit(request, reply, "demo", 2)) return;
+    if (!authorized(request)) return reply.code(401).send({ error: "Control authorization required" });
+    onDemo?.();
     return { ok: true };
   });
 }
@@ -58,6 +73,25 @@ function authorized(request: FastifyRequest): boolean {
   return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.ip);
 }
 
+function rateLimit(request: FastifyRequest, reply: { code: (status: number) => { header: (name: string, value: string) => { send: (payload: unknown) => unknown } } }, action: string, limit: number): boolean {
+  const now = Date.now();
+  const key = `${request.ip}:${action}`;
+  const bucket = requestBuckets.get(key);
+  if (!bucket || now - bucket.startedAt >= 60_000) {
+    requestBuckets.set(key, { startedAt: now, count: 1 });
+    if (requestBuckets.size > 2_000) {
+      for (const [knownKey, knownBucket] of requestBuckets) {
+        if (now - knownBucket.startedAt >= 60_000) requestBuckets.delete(knownKey);
+      }
+    }
+    return true;
+  }
+  bucket.count += 1;
+  if (bucket.count <= limit) return true;
+  reply.code(429).header("retry-after", String(Math.ceil((60_000 - (now - bucket.startedAt)) / 1_000))).send({ error: "Too many control requests" });
+  return false;
+}
+
 function safeEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
@@ -69,7 +103,7 @@ const sides = SIDES.map((side) => `<section><h2>${side.name}</h2><button data-go
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gradería control</title>
 <style>body{font:16px system-ui;background:#101820;color:#fff;margin:2rem auto;max-width:720px;padding:0 1rem}main{display:flex;gap:1rem;flex-wrap:wrap}section{flex:1;min-width:220px;padding:1rem;background:#1d2a36;border-radius:12px}button{font:700 1rem system-ui;padding:.8rem 1rem;cursor:pointer}#score{font-size:2rem;font-weight:700}#message{min-height:1.5em;color:#ffd166}</style></head>
-<body><h1>Gradería · Control</h1><p id="score">Score: …</p><main>${sides}</main><p><button id="start">Reset score / start match</button> <button id="end">END MATCH</button></p><p id="message" role="status"></p>
+<body><h1>Gradería · Control</h1><p id="score">Score: …</p><main>${sides}</main><p><button id="start">Restart match / mock crowd</button> <button id="end">END MATCH</button> <button id="demo">Run demo script</button></p><p id="message" role="status"></p>
 <script>
 const tokenRequired=${tokenRequired};let controlToken=null;let tokenAsked=false;
 async function ensureToken(){if(!tokenRequired)return true;if(tokenAsked)return controlToken!==null;tokenAsked=true;controlToken=window.prompt('Control token');return controlToken!==null;}
@@ -79,6 +113,7 @@ async function refresh(){const data=await request('/control/score');if(data)show
 document.querySelectorAll('[data-goal]').forEach(button=>button.addEventListener('click',async()=>{const data=await request('/control/goal','POST',{side:button.dataset.goal});if(data){showScore(data.goal.scoreBySide);document.querySelector('#message').textContent='GOAL triggered';}}));
 document.querySelector('#start').addEventListener('click',async()=>{const data=await request('/control/start','POST',{});if(data){showScore(data.scoreBySide);document.querySelector('#message').textContent='Score reset';}});
 document.querySelector('#end').addEventListener('click',async()=>{const data=await request('/control/end','POST',{});if(data)document.querySelector('#message').textContent='Generating crowd report…';});
+document.querySelector('#demo').addEventListener('click',async()=>{const data=await request('/control/demo','POST',{});if(data)document.querySelector('#message').textContent='Demo script started';});
 refresh();setInterval(refresh,1500);
 </script></body></html>`;
 }

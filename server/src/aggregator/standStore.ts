@@ -33,6 +33,7 @@ export class StandStore {
   >;
   private readonly scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
   private memberChangeListener: ((change: StandMemberChange) => void) | undefined;
+  private frozenAt: number | undefined;
 
   constructor(private readonly inactivityTimeoutMs = 120_000) {}
 
@@ -40,7 +41,23 @@ export class StandStore {
     this.memberChangeListener = listener;
   }
 
+  setFrozen(frozen: boolean, now = Date.now()): void {
+    if (frozen) {
+      this.frozenAt ??= now;
+      return;
+    }
+    if (this.frozenAt === undefined) return;
+    const pauseDuration = now - this.frozenAt;
+    for (const member of this.users.values()) member.lastActive += pauseDuration;
+    for (const side of SIDES) {
+      const singing = this.singing[side.id];
+      if (singing) singing.endsAt += pauseDuration;
+    }
+    this.frozenAt = undefined;
+  }
+
   handleChatEvent(event: ChatEvent): Side | undefined {
+    if (this.frozenAt !== undefined) return undefined;
     const now = event.timestamp || Date.now();
     const existing = this.users.get(event.userId);
     const requestedSide = parseJoinCommand(event.text);
@@ -102,6 +119,7 @@ export class StandStore {
   }
 
   expireInactive(now = Date.now()): boolean {
+    if (this.frozenAt !== undefined) return false;
     const expiredUserIds = [...this.users.values()]
       .filter((member) => now - member.lastActive >= this.inactivityTimeoutMs)
       .map((member) => member.userId);
@@ -132,6 +150,7 @@ export class StandStore {
   }
 
   expireSinging(now = Date.now()): boolean {
+    if (this.frozenAt !== undefined) return false;
     let changed = false;
     for (const side of SIDES) {
       if (this.singing[side.id] && this.singing[side.id]!.endsAt <= now) {

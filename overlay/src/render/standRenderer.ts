@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { SIDES, type ChantEvent, type Fan, type GoalEvent, type MatchEndedEvent, type PressureMood, type PressureState, type Side, type StandState } from "@twitch-graderia/shared";
+import { SIDES, type ChantEvent, type Fan, type GoalEvent, type MatchEndedEvent, type MatchStartedEvent, type PressureMood, type PressureState, type Side, type StandState } from "@twitch-graderia/shared";
 
 interface SideVisuals {
   background: Graphics;
@@ -123,6 +123,7 @@ export class StandRenderer {
   private lastAudioTarget = 0;
   private goalAnimation: GoalAnimation | undefined;
   private scoreboardScaleStartedAt = 0;
+  private fullTime = false;
 
   constructor(private readonly stage: Container, width: number, height: number, muted = false, debug = false) {
     this.muted = muted;
@@ -322,6 +323,18 @@ export class StandRenderer {
   }
 
   playMatchEnded(event: MatchEndedEvent): void {
+    this.fullTime = true;
+    this.goalAnimation = undefined;
+    this.goalBanner.visible = false;
+    this.goalBannerBackground.visible = false;
+    for (const visuals of this.visuals.values()) {
+      visuals.bannerText.visible = false;
+      visuals.bannerBackground.visible = false;
+    }
+    for (const particle of this.confetti) {
+      particle.active = false;
+      particle.graphic.visible = false;
+    }
     const argentina = SIDES.find((side) => side.id === "argentina")?.name ?? "Argentina";
     const mexico = SIDES.find((side) => side.id === "mexico")?.name ?? "Mexico";
     const score = `${argentina} ${event.finalScoreBySide.argentina} - ${event.finalScoreBySide.mexico} ${mexico}`;
@@ -333,7 +346,19 @@ export class StandRenderer {
     this.layout();
   }
 
+  playMatchStarted(event: MatchStartedEvent): void {
+    this.fullTime = false;
+    this.fullTimeText.visible = false;
+    this.fullTimeBackground.visible = false;
+    this.setScoreboard(event.scoreBySide, false);
+    this.lastTickAt = 0;
+  }
+
   tick(now: number): void {
+    if (this.fullTime) {
+      this.lastTickAt = now;
+      return;
+    }
     const deltaSeconds = this.lastTickAt === 0 ? 1 / 60 : Math.min(0.05, (now - this.lastTickAt) / 1_000);
     this.lastTickAt = now;
     this.updateJoinLabelText(now);

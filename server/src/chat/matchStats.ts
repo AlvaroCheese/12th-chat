@@ -85,7 +85,7 @@ export class MatchStats {
     }
 
     if (!side) return;
-    this.recordFanMessage(event.userId, event.userName);
+    if (event.source !== "mock") this.recordFanMessage(event.userId, event.userName);
     const filtered = filterChant(event.text);
     if (filtered) this.recordChant(filtered);
   }
