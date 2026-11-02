@@ -22,6 +22,7 @@ A browser overlay for OBS where **Twitch chat becomes the crowd of a football st
 | Command | Who | What it does |
 |---|---|---|
 | `!join <side>` | Viewer | Picks a side (country or club) and appears in the stand |
+| `!leave` | Viewer | Leaves their side's stand |
 | `!goal <side>` | Mod / streamer | Triggers that side's celebration |
 | `!start` | Mod / streamer | Starts the match (resets counters) |
 | `!end` | Mod / streamer | Ends the match and generates the AI report |
@@ -50,7 +51,8 @@ Mod permissions are read from the badges included in the chat event. Command nam
 
 ### F4. GOAL button
 - `!goal <side>` launches confetti in that side's colors and a celebration animation.
-- A `/control` page with buttons also exists for the streamer.
+- `!start` resets the score and starts a new match. `!end` is reserved for the AI report milestone.
+- A `/control` page with buttons also exists for the streamer. `CONTROL_TOKEN` can protect its control endpoints; without it, they accept localhost requests only.
 - **Done when:** a mod types the command and the overlay reacts in under 1 second.
 
 ### F5. Pressure meter
@@ -81,16 +83,16 @@ Collaborative tifo, penalty shootout mode, capos (top supporters in the front ro
 
 ## Work milestones (one prompt per milestone)
 
-| Milestone | Content | Verifiable result |
-|---|---|---|
-| **M0** | Repo structure and AGENTS.md | `npm run build` passes and `/health` responds |
-| **M1** | F1 with mock mode | Real and fake messages reach the server |
-| **M2** | F2 | Stand with sides and aggregated crowd |
-| **M3** | F3 | Animated and filtered chants |
-| **M4** | F4 | Confetti by command and `/control` panel |
-| **M5** | F5 | Visible pressure meter |
-| **M6** | F6 | AI report card |
-| **M7** | Polish | README, demo script, deployment and video |
+| Milestone | Content | Verifiable result | Status |
+|---|---|---|---|
+| **M0** | Repo structure and AGENTS.md | `npm run build` passes and `/health` responds | Done |
+| **M1** | F1 with mock mode | Real and fake messages reach the server | Done |
+| **M2** | F2 | Stand with sides and aggregated crowd | Done |
+| **M3** | F3 | Animated and filtered chants | Done |
+| **M4** | F4 | Confetti by command and `/control` panel | In progress |
+| **M5** | F5 | Visible pressure meter | Pending |
+| **M6** | F6 | AI report card | Pending |
+| **M7** | Polish | README, demo script, deployment and video | Pending |
 
 Work order: M0 → M1 → M2 are the base; from M3 on, each milestone adds a visible feature and a fragment of the demo can be recorded.
 

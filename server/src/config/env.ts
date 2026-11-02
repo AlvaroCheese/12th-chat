@@ -15,6 +15,7 @@ const envSchema = z.object({
   ),
   OPENAI_API_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().optional()),
   MOCK_CHAT: z.enum(["0", "1"]).default("0"),
+  CONTROL_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().optional()),
 });
 
 const parsed = envSchema.safeParse(process.env);

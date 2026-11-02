@@ -10,6 +10,7 @@ let currentState: StandState = {
   joinedIds: [],
   leftIds: [],
   singing: { argentina: null, mexico: null },
+  scoreBySide: { argentina: 0, mexico: 0 },
 };
 
 const subscribers = new Set<(state: StandState) => void>();

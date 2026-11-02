@@ -37,3 +37,4 @@ c. Keep PixiJS rendering separate from state and logic.
 d. No secrets in the overlay or in git.
 e. All chant text must pass a filter before being displayed.
 f. The overlay must be usable with mock data when Twitch is not connected.
+g. Keep hand-written overlay mock logic in a single TypeScript source file. TypeScript build output belongs in workspace output directories (for example `overlay/dist-types/` or `server/dist/`), never under `src/`; remove stale compiled `.js` twins beside `.ts` files because Vite may resolve them first.

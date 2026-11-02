@@ -26,6 +26,7 @@ Copy `.env.example` to `.env`. The server reads these values:
 | `OPENAI_API_KEY` | Optional; not used by F2 |
 | `PORT` | Server port; defaults to `3000` |
 | `MOCK_CHAT` | Set to `1` for mock chat, `0` for Twitch mode |
+| `CONTROL_TOKEN` | Optional bearer token for `/control` actions; without it, control actions are localhost-only |
 
 ## Connect Twitch
 
@@ -61,6 +62,12 @@ The overlay uses procedural crowd noise. Add `?mute=1` to disable it. In OBS, yo
 - **Server mock:** set `MOCK_CHAT=1`, run `npm run dev:server`, then `npm run dev:overlay` in another terminal. Open the Vite URL without `?mock=1`. Watch for coordinated chants, filtered text, user churn, reused seats, and changing counters.
 - **Overlay-only mock:** open the Vite URL with `?mock=1` to simulate joins, leaves, switches, chants, and banners locally. Add `&mute=1` to silence procedural audio.
 - **Twitch:** connect the streamer, type `!join argentina` or `!join mexico`, coordinate the same chant across at least five distinct joined viewers, then use `!leave` or wait 120 seconds without chat activity.
+
+## Goals and control page
+
+The broadcaster or a moderator can type `!goal argentina` or `!goal mexico` to trigger a celebration; side names are case-insensitive and each side has a three-second cooldown. `!start` resets the score. `!end` is reserved for the AI report milestone. Visit [http://localhost:3000/control](http://localhost:3000/control) for GOAL buttons and the current score. Set `CONTROL_TOKEN` in `.env` to require a token for control actions; the page prompts once and keeps it in memory. With no token configured, only localhost requests can control the match.
+
+When `MOCK_CHAT=1`, the server periodically triggers a goal. The overlay-only `?mock=1` mode also simulates goals locally. To test a goal immediately, use the `/control` page or send `!goal argentina` as a moderator in Twitch chat; use `!start` or the reset button to clear the score.
 
 ## Features and milestones
 

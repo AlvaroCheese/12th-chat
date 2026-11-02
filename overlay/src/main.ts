@@ -14,9 +14,13 @@ async function startOverlay(host: HTMLElement): Promise<void> {
   const renderer = await createScene(host, query.get("mute") === "1");
   subscribeToStandState((state) => renderer.update(state));
   if (query.get("mock") === "1") {
-    startMockMode(setStandState, (chant) => renderer.playChant(chant));
+    startMockMode(
+      setStandState,
+      (chant) => renderer.playChant(chant),
+      (goal) => renderer.playGoal(goal),
+    );
   } else {
-    connectToServer(setStandState, (chant) => renderer.playChant(chant));
+    connectToServer(setStandState, (chant) => renderer.playChant(chant), (goal) => renderer.playGoal(goal));
   }
 }
 

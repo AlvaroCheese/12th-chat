@@ -10,6 +10,8 @@ import { registerTwitchAuthRoutes } from "./routes/twitchAuth.js";
 import { StandAggregator, StandStore } from "./aggregator/index.js";
 import { ChantDetector } from "./chat/chantDetector.js";
 import { getChantConfig, getFanInactivityTimeoutMs } from "./config/chants.js";
+import { GoalController, parseGoalSide } from "./match/goalController.js";
+import { registerControlRoutes } from "./routes/control.js";
 
 const app = Fastify({
   logger: {
@@ -32,6 +34,7 @@ const chatService = new TwitchChatService(authProvider, tokenStore);
 const mockChatEnabled = env.MOCK_CHAT === "1";
 const standStore = new StandStore(getFanInactivityTimeoutMs(mockChatEnabled));
 const chantDetector = new ChantDetector(standStore, getChantConfig(mockChatEnabled));
+const goalController = new GoalController(standStore);
 const standAggregator = new StandAggregator(io, standStore, (snapshot) => {
   app.log.debug(
     {
@@ -54,8 +57,28 @@ authProvider.onRefreshFailure(() => {
 
 app.get("/health", async () => ({ ok: true }));
 registerTwitchAuthRoutes(app, authProvider, chatService, tokenStore);
+registerControlRoutes(app, goalController, standStore, (side, scoreBySide) => {
+  io.emit("goal", { side, scoreBySide });
+});
 
 chatEventBus.on("chat", (event) => {
+  const privileged = event.badges.broadcaster || event.badges.moderator;
+  if (!privileged && /^\s*!goal\b/i.test(event.text)) return;
+  if (privileged && /^\s*!goal\b/i.test(event.text)) {
+    const side = parseGoalSide(event.text);
+    const goal = side && goalController.goal(side);
+    if (goal) {
+      io.emit("goal", goal);
+      app.log.info({ side: goal.side }, "Goal triggered");
+    }
+  } else if (privileged && /^\s*!start\s*$/i.test(event.text)) {
+    goalController.start();
+    app.log.info("Match score reset");
+  } else if (privileged && /^\s*!end\s*$/i.test(event.text)) {
+    // TODO(M6): Generate and publish the AI crowd report.
+    app.log.info("!end report generation is not implemented yet");
+  }
+
   const side = standStore.handleChatEvent(event);
   if (side) {
     const chant = chantDetector.handle(event, side);

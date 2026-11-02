@@ -27,6 +27,7 @@ export class StandStore {
     Side,
     SingingState | null
   >;
+  private readonly scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
 
   constructor(private readonly inactivityTimeoutMs = 120_000) {}
 
@@ -93,6 +94,17 @@ export class StandStore {
     return this.singing[side];
   }
 
+  scoreGoal(side: Side): Record<Side, number> {
+    this.scoreBySide[side] += 1;
+    return { ...this.scoreBySide };
+  }
+
+  resetScore(): Record<Side, number> {
+    this.scoreBySide.argentina = 0;
+    this.scoreBySide.mexico = 0;
+    return { ...this.scoreBySide };
+  }
+
   expireSinging(now = Date.now()): boolean {
     let changed = false;
     for (const side of SIDES) {
@@ -141,6 +153,7 @@ export class StandStore {
         Side,
         SingingState | null
       >,
+      scoreBySide: { ...this.scoreBySide },
     };
   }
 

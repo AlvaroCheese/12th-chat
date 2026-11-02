@@ -39,6 +39,7 @@ export interface StandState {
   joinedIds: string[];
   leftIds: string[];
   singing: Record<Side, SingingState | null>;
+  scoreBySide: Record<Side, number>;
 }
 
 export interface SingingState {
@@ -54,8 +55,13 @@ export interface ChantEvent {
   durationMs: number;
 }
 
+export interface GoalEvent {
+  side: Side;
+  scoreBySide: Record<Side, number>;
+}
+
 export type ServerToOverlayMessage =
   | { type: "stand:update"; state: StandState }
   | { type: "chant"; chant: ChantEvent }
-  | { type: "goal"; side: Side }
+  | { type: "goal"; goal: GoalEvent }
   | { type: "match:end"; report: string };

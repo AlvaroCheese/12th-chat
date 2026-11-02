@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { SIDES, type ChantEvent, type Fan, type Side, type StandState } from "@twitch-graderia/shared";
+import { SIDES, type ChantEvent, type Fan, type GoalEvent, type Side, type StandState } from "@twitch-graderia/shared";
 
 interface SideVisuals {
   background: Graphics;
@@ -46,6 +46,22 @@ interface LayoutGeometry {
   seatRows: number;
 }
 
+interface ConfettiParticle {
+  graphic: Graphics;
+  startedAt: number;
+  durationMs: number;
+  velocityX: number;
+  velocityY: number;
+  rotationSpeed: number;
+  active: boolean;
+}
+
+interface GoalAnimation {
+  side: Side;
+  startedAt: number;
+  endsAt: number;
+}
+
 const FAN_CAP = 300;
 const FAN_POOL_CAP = 600;
 const SEAT_COLUMNS = 15;
@@ -54,6 +70,8 @@ const JOIN_LABEL_MS = 3_000;
 const ENTER_ANIMATION_MS = 360;
 const LEAVE_ANIMATION_MS = 440;
 const SKIN_TONES = [0xffd7b5, 0xe9b38f, 0xc7835c, 0x9c6044, 0xf1c7a2, 0xb97754];
+const CONFETTI_POOL_SIZE = 160;
+const GOAL_ANIMATION_MS = 4_500;
 
 export class StandRenderer {
   private readonly panel = new Graphics();
@@ -61,6 +79,18 @@ export class StandRenderer {
     text: "Gradería",
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 34, fontWeight: "bold" },
   });
+  private readonly effectsLayer = new Container();
+  private readonly scoreboardBackground = new Graphics();
+  private readonly scoreboard = new Text({
+    text: "Argentina 0  -  0 Mexico",
+    style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 20, fontWeight: "bold" },
+  });
+  private readonly goalBannerBackground = new Graphics();
+  private readonly goalBanner = new Text({
+    text: "",
+    style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 58, fontWeight: "bold", align: "center" },
+  });
+  private readonly confetti: ConfettiParticle[] = [];
   private readonly visuals = new Map<Side, SideVisuals>();
   private readonly fanPool: FanSprite[] = [];
   private readonly freeSprites: FanSprite[] = [];
@@ -75,11 +105,17 @@ export class StandRenderer {
   private audioContext: AudioContext | undefined;
   private noiseGain: GainNode | undefined;
   private lastAudioTarget = 0;
+  private goalAnimation: GoalAnimation | undefined;
+  private scoreboardScaleStartedAt = 0;
 
   constructor(private readonly stage: Container, width: number, height: number, muted = false) {
     this.muted = muted;
     this.geometry = this.makeGeometry(width, height);
     this.title.anchor.set(0.5);
+    this.scoreboard.anchor.set(0.5);
+    this.goalBanner.anchor.set(0.5);
+    this.goalBanner.visible = false;
+    this.goalBannerBackground.visible = false;
     this.stage.addChild(this.panel);
 
     for (const side of SIDES) {
@@ -140,7 +176,23 @@ export class StandRenderer {
       });
     }
 
-    this.stage.addChild(this.title);
+    this.effectsLayer.addChild(this.scoreboardBackground, this.scoreboard, this.goalBannerBackground, this.goalBanner);
+    for (let index = 0; index < CONFETTI_POOL_SIZE; index += 1) {
+      const graphic = new Graphics();
+      graphic.visible = false;
+      this.confetti.push({
+        graphic,
+        startedAt: 0,
+        durationMs: 0,
+        velocityX: 0,
+        velocityY: 0,
+        rotationSpeed: 0,
+        active: false,
+      });
+      this.effectsLayer.addChild(graphic);
+    }
+    this.effectsLayer.addChild(this.title);
+    this.stage.addChild(this.effectsLayer);
     this.layout();
     if (!muted) this.startProceduralCrowdSound();
   }
@@ -156,6 +208,7 @@ export class StandRenderer {
   update(state: StandState): void {
     const isFirstState = this.state === undefined;
     this.state = state;
+    this.setScoreboard(state.scoreBySide, true);
     const now = Date.now();
     for (const side of SIDES) {
       const visuals = this.visuals.get(side.id);
@@ -205,12 +258,30 @@ export class StandRenderer {
     if (this.audioContext?.state === "suspended") void this.audioContext.resume().catch(() => undefined);
   }
 
+  playGoal(goal: GoalEvent): void {
+    const now = Date.now();
+    const side = SIDES.find((candidate) => candidate.id === goal.side);
+    if (!side) return;
+    this.goalAnimation = { side: goal.side, startedAt: now, endsAt: now + GOAL_ANIMATION_MS };
+    this.setScoreboard(goal.scoreBySide, true);
+    this.goalBanner.text = `GOOOL · ${side.name}`;
+    this.goalBanner.visible = true;
+    this.goalBannerBackground.visible = true;
+    this.goalBanner.alpha = 1;
+    this.goalBanner.scale.set(0.65);
+    this.spawnConfetti(goal.side, now);
+    this.playGoalSound();
+    this.layout();
+  }
+
   tick(now: number): void {
     const deltaSeconds = this.lastTickAt === 0 ? 1 / 60 : Math.min(0.05, (now - this.lastTickAt) / 1_000);
     this.lastTickAt = now;
     this.updateJoinLabelText(now);
     this.updateCounters(deltaSeconds);
     this.animateSprites(now);
+    this.animateConfetti(now);
+    this.animateGoal(now);
     this.updateBanners(now);
     this.updateCrowdSound(now);
   }
@@ -238,7 +309,20 @@ export class StandRenderer {
     this.panel.clear().roundRect(panelX, panelY, panelWidth, panelHeight, 22)
       .fill({ color: 0x081421, alpha: 0.84 })
       .stroke({ color: 0xffffff, alpha: 0.2, width: 2 });
-    this.title.position.set(this.geometry.panelX + halfWidth, 34);
+    this.title.position.set(panelX + panelWidth / 2, 30);
+    this.scoreboard.position.set(panelX + panelWidth / 2, panelY + 33);
+    this.scoreboardBackground.clear()
+      .roundRect(panelX + panelWidth / 2 - 142, panelY + 16, 284, 35, 12)
+      .fill({ color: 0x081421, alpha: 0.88 })
+      .stroke({ color: 0xffffff, alpha: 0.3, width: 1 });
+    this.goalBanner.position.set(panelX + panelWidth / 2, panelY + panelHeight * 0.48);
+    this.goalBannerBackground.clear();
+    const bannerWidth = Math.min(panelWidth - 48, Math.max(300, this.goalBanner.width + 56));
+    const bannerY = panelY + panelHeight * 0.48 - 48;
+    const goalColor = this.goalAnimation ? SIDES.find((side) => side.id === this.goalAnimation?.side)?.primaryColor ?? 0x183153 : 0x183153;
+    this.goalBannerBackground.roundRect(panelX + (panelWidth - bannerWidth) / 2, bannerY, bannerWidth, 96, 18)
+      .fill({ color: goalColor, alpha: 0.93 })
+      .stroke({ color: 0xffffff, alpha: 0.8, width: 3 });
 
     for (let sideIndex = 0; sideIndex < SIDES.length; sideIndex += 1) {
       const side = SIDES[sideIndex];
@@ -385,6 +469,7 @@ export class StandRenderer {
     container.addChild(graphic);
     container.visible = false;
     this.stage.addChild(container);
+      this.stage.addChild(this.effectsLayer);
     const sprite: FanSprite = {
       container,
       graphic,
@@ -437,11 +522,120 @@ export class StandRenderer {
       }
 
       const singing = sprite.side ? this.state?.singing[sprite.side] : null;
-      const bounce = singing && singing.endsAt > now
+      const goal = this.goalAnimation;
+      let goalBounce = 0;
+      if (goal && goal.endsAt > now && sprite.animationKind === undefined) {
+        const elapsed = now - goal.startedAt;
+        if (sprite.side === goal.side) {
+          const envelope = Math.max(0, 1 - elapsed / 1_400);
+          goalBounce = Math.abs(Math.sin(elapsed * 0.018 + sprite.bouncePhase)) * 25 * envelope;
+          sprite.container.alpha = 1;
+        } else {
+          sprite.container.alpha = 0.48;
+        }
+      } else if (sprite.animationKind === undefined) {
+        sprite.container.alpha = 1;
+      }
+      const chantBounce = singing && singing.endsAt > now
         ? Math.abs(Math.sin(now * (0.008 + singing.intensity * 0.009) + sprite.bouncePhase)) * (2 + 8 * singing.intensity)
         : 0;
-      if (!sprite.animationKind) sprite.container.position.y = sprite.baseY - bounce;
+      const slump = goal && goal.endsAt > now && sprite.side !== goal.side ? 5 : 0;
+      if (!sprite.animationKind) sprite.container.position.y = sprite.baseY + slump - goalBounce - chantBounce;
     }
+  }
+
+  private setScoreboard(score: Record<Side, number>, animate: boolean): void {
+    const next = `${SIDES[0]?.name ?? "Argentina"} ${score.argentina}  -  ${score.mexico} ${SIDES[1]?.name ?? "Mexico"}`;
+    if (this.scoreboard.text === next) return;
+    this.scoreboard.text = next;
+    if (animate) this.scoreboardScaleStartedAt = Date.now();
+    this.layout();
+  }
+
+  private spawnConfetti(side: Side, now: number): void {
+    const sideIndex = SIDES.findIndex((candidate) => candidate.id === side);
+    const centerX = this.geometry.panelX + this.geometry.halfWidth * (sideIndex + 0.5);
+    const colors = [
+      SIDES[sideIndex]?.primaryColor ?? 0xffffff,
+      SIDES[sideIndex]?.secondaryColor ?? 0xffffff,
+      0xffffff,
+    ];
+    for (const particle of this.confetti) {
+      const color = colors[Math.floor(Math.random() * colors.length)] ?? 0xffffff;
+      const size = 4 + Math.random() * 8;
+      particle.graphic.clear().roundRect(-size / 2, -size / 2, size, size * (0.7 + Math.random()), 1).fill({ color });
+      particle.graphic.position.set(centerX + (Math.random() - 0.5) * this.geometry.halfWidth * 0.9, this.geometry.panelY - 20);
+      particle.graphic.rotation = Math.random() * Math.PI;
+      particle.graphic.alpha = 1;
+      particle.graphic.visible = true;
+      particle.startedAt = now;
+      particle.durationMs = 2_700 + Math.random() * 1_400;
+      particle.velocityX = (Math.random() - 0.5) * 5;
+      particle.velocityY = -3 - Math.random() * 6;
+      particle.rotationSpeed = (Math.random() - 0.5) * 0.24;
+      particle.active = true;
+    }
+  }
+
+  private animateConfetti(now: number): void {
+    for (const particle of this.confetti) {
+      if (!particle.active) continue;
+      const elapsed = now - particle.startedAt;
+      if (elapsed >= particle.durationMs) {
+        particle.active = false;
+        particle.graphic.visible = false;
+        continue;
+      }
+      particle.graphic.x += particle.velocityX;
+      particle.graphic.y += particle.velocityY;
+      particle.velocityY += 0.16;
+      particle.graphic.rotation += particle.rotationSpeed;
+      particle.graphic.alpha = Math.min(1, (particle.durationMs - elapsed) / 600);
+    }
+  }
+
+  private animateGoal(now: number): void {
+    if (this.scoreboardScaleStartedAt > 0) {
+      const elapsed = now - this.scoreboardScaleStartedAt;
+      if (elapsed >= 460) {
+        this.scoreboard.scale.set(1);
+        this.scoreboardScaleStartedAt = 0;
+      } else {
+        const pulse = 1 + Math.sin((elapsed / 460) * Math.PI) * 0.2;
+        this.scoreboard.scale.set(pulse);
+      }
+    }
+    const goal = this.goalAnimation;
+    if (!goal) return;
+    const remaining = goal.endsAt - now;
+    if (remaining <= 0) {
+      this.goalAnimation = undefined;
+      this.goalBanner.visible = false;
+      this.goalBannerBackground.visible = false;
+      return;
+    }
+    const progress = (now - goal.startedAt) / GOAL_ANIMATION_MS;
+    this.goalBanner.alpha = remaining < 900 ? remaining / 900 : 1;
+    this.goalBannerBackground.alpha = this.goalBanner.alpha;
+    this.goalBanner.scale.set(0.65 + Math.min(1, progress * 4) * 0.35);
+  }
+
+  private playGoalSound(): void {
+    if (this.muted || !this.audioContext) return;
+    if (this.audioContext.state === "suspended") void this.audioContext.resume().catch(() => undefined);
+    const now = this.audioContext.currentTime;
+    const oscillator = this.audioContext.createOscillator();
+    const gain = this.audioContext.createGain();
+    oscillator.type = "triangle";
+    oscillator.frequency.setValueAtTime(520, now);
+    oscillator.frequency.setValueAtTime(720, now + 0.2);
+    oscillator.frequency.setValueAtTime(880, now + 0.42);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.16, now + 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+    oscillator.connect(gain).connect(this.audioContext.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.92);
   }
 
   private finishDeparture(sprite: FanSprite, now: number): void {

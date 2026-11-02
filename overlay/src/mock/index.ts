@@ -2,6 +2,7 @@ import {
   SIDES,
   type ChantEvent,
   type Fan,
+  type GoalEvent,
   type RecentJoin,
   type Side,
   type SingingState,
@@ -27,6 +28,7 @@ interface LocalMember extends Fan {
 export function startMockMode(
   setState: (state: StandState) => void,
   onChant: (chant: ChantEvent) => void,
+  onGoal: (goal: GoalEvent) => void,
 ): void {
   console.info("Overlay mock mode enabled with churn and chant simulation");
   const users = new Map<string, LocalMember>();
@@ -48,6 +50,9 @@ export function startMockMode(
   let lastChantAt = Date.now() + 2_000;
   let lastIsolatedAt = Date.now() + 800;
   let sentBlockedExample = false;
+  let lastGoalAt = Date.now() + 6_000;
+  let goalCycle = 0;
+  const scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
 
   for (let index = 0; index < INITIAL_USERS; index += 1) {
     const side: Side = index % 2 === 0 ? "argentina" : "mexico";
@@ -130,12 +135,20 @@ export function startMockMode(
       sentBlockedExample = true;
     }
 
+    if (now - lastGoalAt >= 18_000) {
+      const side: Side = goalCycle % 2 === 0 ? "argentina" : "mexico";
+      scoreBySide[side] += 1;
+      onGoal({ side, scoreBySide: { ...scoreBySide } });
+      goalCycle += 1;
+      lastGoalAt = now;
+    }
+
     for (const side of SIDES) {
       if (singing[side.id] && singing[side.id]!.endsAt <= now) singing[side.id] = null;
     }
     while (recentJoins[0] && recentJoins[0].timestamp < now - RECENT_JOIN_MS) recentJoins.shift();
 
-    setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing));
+    setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing, scoreBySide));
     joinedIds.clear();
     leftIds.clear();
   }, 250);
@@ -259,6 +272,7 @@ function createSnapshot(
   joinedIds: Set<string>,
   leftIds: Set<string>,
   singing: Record<Side, SingingState | null>,
+  scoreBySide: Record<Side, number>,
 ): StandState {
   const counts: Record<Side, number> = { argentina: 0, mexico: 0 };
   for (const member of users.values()) counts[member.side] += 1;
@@ -280,6 +294,7 @@ function createSnapshot(
     joinedIds: [...joinedIds],
     leftIds: [...leftIds],
     singing: { argentina: singing.argentina && { ...singing.argentina }, mexico: singing.mexico && { ...singing.mexico } },
+    scoreBySide: { ...scoreBySide },
   };
 }
 

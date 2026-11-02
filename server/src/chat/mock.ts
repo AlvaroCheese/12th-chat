@@ -60,6 +60,10 @@ export function startMockChat(): void {
     const joinedUser = mockUsersBySide.mexico.at(-1);
     if (joinedUser) emitMockEvent(joinedUser, "¡VAMOS! No coordinación suficiente");
   }, 7_000);
+
+  setInterval(() => {
+    emitMockEvent("AlbiFan125", "!goal argentina");
+  }, 18_000);
 }
 
 function addMockUser(index: number): void {
