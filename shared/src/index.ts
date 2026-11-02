@@ -70,8 +70,45 @@ export interface GoalEvent {
   scoreBySide: Record<Side, number>;
 }
 
+export interface MatchStatsSummary {
+  durationMs: number;
+  finalScoreBySide: Record<Side, number>;
+  peakFansBySide: Record<Side, number>;
+  loudestSide: Side;
+  averagePressureBySide: Record<Side, number>;
+  peakActivityMinute: number;
+  peakActivityMessages: number;
+  topChants: Array<{ text: string; count: number }>;
+  chantsTriggeredBySide: Record<Side, number>;
+  mostActiveFan: { displayName: string; messageCount: number } | null;
+  fansJoined: number;
+  fansLeft: number;
+  fansSwitchedSides: number;
+  pressureHighlights: Array<{ minute: number; side: Side; event: "cold" | "recovered" }>;
+}
+
+export interface CrowdReport {
+  source: "ai" | "template";
+  createdAt: string;
+  language: string;
+  title: string;
+  narrative: string;
+  mvpBlurb: string;
+  loudestMoment: string;
+  tagline: string;
+  stats: MatchStatsSummary;
+}
+
+export interface MatchEndedEvent {
+  status: "generating" | "ready";
+  finalScoreBySide: Record<Side, number>;
+  reportUrl: string;
+  source?: CrowdReport["source"];
+}
+
 export type ServerToOverlayMessage =
   | { type: "stand:update"; state: StandState }
   | { type: "chant"; chant: ChantEvent }
   | { type: "goal"; goal: GoalEvent }
+  | { type: "matchEnded"; event: MatchEndedEvent }
   | { type: "match:end"; report: string };

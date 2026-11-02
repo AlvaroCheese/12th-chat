@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { SIDES, type ChantEvent, type Fan, type GoalEvent, type PressureMood, type PressureState, type Side, type StandState } from "@twitch-graderia/shared";
+import { SIDES, type ChantEvent, type Fan, type GoalEvent, type MatchEndedEvent, type PressureMood, type PressureState, type Side, type StandState } from "@twitch-graderia/shared";
 
 interface SideVisuals {
   background: Graphics;
@@ -100,6 +100,8 @@ export class StandRenderer {
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 20, fontWeight: "bold" },
   });
   private readonly goalBannerBackground = new Graphics();
+  private readonly fullTimeBackground = new Graphics();
+  private readonly fullTimeText = new Text({ text: "", style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 27, fontWeight: "bold", align: "center" } });
   private readonly goalBanner = new Text({
     text: "",
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 58, fontWeight: "bold", align: "center" },
@@ -135,6 +137,8 @@ export class StandRenderer {
     this.goalBanner.anchor.set(0.5);
     this.goalBanner.visible = false;
     this.goalBannerBackground.visible = false;
+    this.fullTimeBackground.visible = false;
+    this.fullTimeText.visible = false;
     this.stage.addChild(this.panel);
 
     for (const side of SIDES) {
@@ -212,7 +216,7 @@ export class StandRenderer {
       });
     }
 
-    this.effectsLayer.addChild(this.scoreboardBackground, this.scoreboard, this.goalBannerBackground, this.goalBanner);
+    this.effectsLayer.addChild(this.scoreboardBackground, this.scoreboard, this.goalBannerBackground, this.goalBanner, this.fullTimeBackground, this.fullTimeText);
     for (let index = 0; index < CONFETTI_POOL_SIZE; index += 1) {
       const graphic = new Graphics();
       graphic.visible = false;
@@ -317,6 +321,18 @@ export class StandRenderer {
     this.layout();
   }
 
+  playMatchEnded(event: MatchEndedEvent): void {
+    const argentina = SIDES.find((side) => side.id === "argentina")?.name ?? "Argentina";
+    const mexico = SIDES.find((side) => side.id === "mexico")?.name ?? "Mexico";
+    const score = `${argentina} ${event.finalScoreBySide.argentina} - ${event.finalScoreBySide.mexico} ${mexico}`;
+    this.fullTimeText.text = event.status === "generating"
+      ? `FULL TIME · ${score}\nGenerando el reporte de la grada…`
+      : `FULL TIME · ${score}\nReporte listo: ${event.reportUrl}`;
+    this.fullTimeText.visible = true;
+    this.fullTimeBackground.visible = true;
+    this.layout();
+  }
+
   tick(now: number): void {
     const deltaSeconds = this.lastTickAt === 0 ? 1 / 60 : Math.min(0.05, (now - this.lastTickAt) / 1_000);
     this.lastTickAt = now;
@@ -368,6 +384,13 @@ export class StandRenderer {
     this.goalBannerBackground.roundRect(panelX + (panelWidth - bannerWidth) / 2, bannerY, bannerWidth, 96, 18)
       .fill({ color: goalColor, alpha: 0.93 })
       .stroke({ color: 0xffffff, alpha: 0.8, width: 3 });
+    this.fullTimeText.position.set(panelX + panelWidth / 2, panelY + panelHeight * 0.48);
+    this.fullTimeText.anchor.set(0.5);
+    this.fullTimeBackground.clear();
+    const fullTimeWidth = Math.min(panelWidth - 32, Math.max(320, this.fullTimeText.width + 48));
+    this.fullTimeBackground.roundRect(panelX + (panelWidth - fullTimeWidth) / 2, panelY + panelHeight * 0.48 - 54, fullTimeWidth, 108, 18)
+      .fill({ color: 0x081421, alpha: 0.96 })
+      .stroke({ color: 0x8fe3ae, alpha: 0.95, width: 3 });
 
     for (let sideIndex = 0; sideIndex < SIDES.length; sideIndex += 1) {
       const side = SIDES[sideIndex];

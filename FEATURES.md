@@ -90,8 +90,8 @@ Collaborative tifo, penalty shootout mode, capos (top supporters in the front ro
 | **M2** | F2 | Stand with sides and aggregated crowd | Done |
 | **M3** | F3 | Animated and filtered chants | Done |
 | **M4** | F4 | Confetti by command and `/control` panel | Done |
-| **M5** | F5 | Visible pressure meter | In progress |
-| **M6** | F6 | AI report card | Pending |
+| **M5** | F5 | Visible pressure meter | Done |
+| **M6** | F6 | AI report card | In progress |
 | **M7** | Polish | README, demo script, deployment and video | Pending |
 
 Work order: M0 → M1 → M2 are the base; from M3 on, each milestone adds a visible feature and a fragment of the demo can be recorded.

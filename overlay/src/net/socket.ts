@@ -1,10 +1,11 @@
 import { io } from "socket.io-client";
-import type { ChantEvent, GoalEvent, StandState } from "@twitch-graderia/shared";
+import type { ChantEvent, GoalEvent, MatchEndedEvent, StandState } from "@twitch-graderia/shared";
 
 export function connectToServer(
   onStandState: (state: StandState) => void,
   onChant: (chant: ChantEvent) => void,
   onGoal: (goal: GoalEvent) => void,
+  onMatchEnded: (event: MatchEndedEvent) => void,
 ): void {
   const socket = io(import.meta.env.VITE_SERVER_URL ?? "http://localhost:3000", {
     autoConnect: true,
@@ -16,4 +17,5 @@ export function connectToServer(
   socket.on("stand:update", (state: StandState) => onStandState(state));
   socket.on("chant", (chant: ChantEvent) => onChant(chant));
   socket.on("goal", (goal: GoalEvent) => onGoal(goal));
+  socket.on("matchEnded", (event: MatchEndedEvent) => onMatchEnded(event));
 }

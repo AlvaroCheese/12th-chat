@@ -16,6 +16,7 @@ export class StandAggregator {
     private readonly store: StandStore,
     private readonly pressure: PressureMeter,
     private readonly onSnapshot?: (snapshot: StandState) => void,
+    private readonly onSample?: (snapshot: StandState, now: number) => void,
   ) {}
 
   start(): void {
@@ -48,6 +49,7 @@ export class StandAggregator {
     this.store.expireInactive(now);
     this.store.expireSinging(now);
     const snapshot = this.makeSnapshot(now);
+    this.onSample?.(snapshot, now);
     const serialized = JSON.stringify({ ...snapshot, pressure: undefined });
     const baseChanged = serialized !== this.lastSerializedSnapshot;
     const pressureChanged = this.pressure.isMeaningfulChange(this.lastPressure, snapshot.pressure);

@@ -13,6 +13,10 @@ import { getChantConfig, getFanInactivityTimeoutMs } from "./config/chants.js";
 import { GoalController, parseGoalSide } from "./match/goalController.js";
 import { registerControlRoutes } from "./routes/control.js";
 import { getPressureConfig, PressureMeter } from "./chat/pressure.js";
+import { MatchStats } from "./chat/matchStats.js";
+import { generateCrowdReport } from "./ai/report.js";
+import { ReportStore } from "./ai/reportStore.js";
+import { registerReportRoutes } from "./routes/report.js";
 
 const app = Fastify({
   logger: {
@@ -37,6 +41,12 @@ const standStore = new StandStore(getFanInactivityTimeoutMs(mockChatEnabled));
 const chantDetector = new ChantDetector(standStore, getChantConfig(mockChatEnabled));
 const goalController = new GoalController(standStore);
 const pressureMeter = new PressureMeter(getPressureConfig(mockChatEnabled));
+const matchStats = new MatchStats();
+const reportStore = new ReportStore();
+await reportStore.load();
+let mockMatchTimer: NodeJS.Timeout | undefined;
+let reportInProgress = false;
+let matchGeneration = 0;
 const standAggregator = new StandAggregator(io, standStore, pressureMeter, (snapshot) => {
   app.log.debug(
     {
@@ -48,7 +58,40 @@ const standAggregator = new StandAggregator(io, standStore, pressureMeter, (snap
     },
     "StandState snapshot emitted",
   );
-});
+}, (snapshot, now) => matchStats.recordSnapshot(snapshot, now));
+standStore.onMemberChange((change) => matchStats.recordMemberChange(change));
+
+function startMatchStats(): void {
+  matchGeneration += 1;
+  if (mockMatchTimer) clearTimeout(mockMatchTimer);
+  mockMatchTimer = undefined;
+  reportInProgress = false;
+  matchStats.start();
+  if (mockChatEnabled) {
+    mockMatchTimer = setTimeout(() => void finishMatch(), env.MOCK_MATCH_DURATION_MINUTES * 60_000);
+  }
+}
+
+async function finishMatch(): Promise<void> {
+  if (!matchStats.isActive || reportInProgress) return;
+  reportInProgress = true;
+  const generation = matchGeneration;
+  if (mockMatchTimer) clearTimeout(mockMatchTimer);
+  mockMatchTimer = undefined;
+  const finalState = standStore.createSnapshot();
+  const stats = matchStats.finish(Date.now(), finalState.scoreBySide);
+  io.emit("matchEnded", { status: "generating", finalScoreBySide: stats.finalScoreBySide, reportUrl: "/report" });
+  try {
+    const report = await generateCrowdReport(stats);
+    if (generation !== matchGeneration) return;
+    await reportStore.save(report);
+    io.emit("matchEnded", { status: "ready", finalScoreBySide: stats.finalScoreBySide, reportUrl: "/report", source: report.source });
+  } catch {
+    app.log.error("Could not save the crowd report");
+  } finally {
+    if (generation === matchGeneration) reportInProgress = false;
+  }
+}
 
 authProvider.onRefresh((userId, token) => {
   void chatService.saveRefreshedToken(userId, token).catch(() => {
@@ -64,11 +107,13 @@ registerTwitchAuthRoutes(app, authProvider, chatService, tokenStore);
 registerControlRoutes(app, goalController, standStore, (side, scoreBySide) => {
   pressureMeter.boost(side, "goal");
   io.emit("goal", { side, scoreBySide });
-});
+}, startMatchStats, finishMatch);
+registerReportRoutes(app, reportStore);
 
 chatEventBus.on("chat", (event) => {
   const privileged = event.badges.broadcaster || event.badges.moderator;
   if (!privileged && /^\s*!goal\b/i.test(event.text)) return;
+  if (!privileged && /^\s*!end\b/i.test(event.text)) return;
   if (privileged && /^\s*!goal\b/i.test(event.text)) {
     const side = parseGoalSide(event.text);
     const goal = side && goalController.goal(side);
@@ -79,18 +124,20 @@ chatEventBus.on("chat", (event) => {
     }
   } else if (privileged && /^\s*!start\s*$/i.test(event.text)) {
     goalController.start();
+    startMatchStats();
     app.log.info("Match score reset");
   } else if (privileged && /^\s*!end\s*$/i.test(event.text)) {
-    // TODO(M6): Generate and publish the AI crowd report.
-    app.log.info("!end report generation is not implemented yet");
+    void finishMatch();
   }
 
   const side = standStore.handleChatEvent(event);
+  matchStats.recordChatMessage(event, side);
   if (side) {
     pressureMeter.recordMessage(side, event.timestamp || Date.now());
     const chant = chantDetector.handle(event, side);
     if (chant) {
       pressureMeter.boost(side, "chant");
+      matchStats.recordChantTriggered(side);
       io.emit("chant", chant);
       app.log.info({ side: chant.side, intensity: chant.intensity }, "Chant triggered");
     }
@@ -102,6 +149,8 @@ chatEventBus.on("chat", (event) => {
 app.log.info(`Mock chat ${mockChatEnabled ? "enabled" : "disabled"}`);
 
 if (mockChatEnabled) {
+  goalController.start();
+  startMatchStats();
   startMockChat();
 } else if (env.TWITCH_CLIENT_ID && env.TWITCH_CLIENT_SECRET) {
   try {

@@ -14,6 +14,10 @@ const envSchema = z.object({
     z.string().url().default("http://localhost:3000/auth/twitch/callback"),
   ),
   OPENAI_API_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().optional()),
+  OPENAI_MODEL: z.preprocess((value) => value === "" ? undefined : value, z.string().default("gpt-4.1-mini")),
+  REPORT_LANGUAGE: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^[a-zA-Z-]{2,20}$/).default("es")),
+  REPORT_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(15_000),
+  MOCK_MATCH_DURATION_MINUTES: z.coerce.number().int().positive().max(1_440).default(3),
   MOCK_CHAT: z.enum(["0", "1"]).default("0"),
   CONTROL_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().optional()),
 });

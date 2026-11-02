@@ -4,6 +4,7 @@ import {
   type ChantEvent,
   type Fan,
   type GoalEvent,
+  type MatchEndedEvent,
   type PressureMood,
   type PressureState,
   type RecentJoin,
@@ -33,6 +34,7 @@ export function startMockMode(
   setState: (state: StandState) => void,
   onChant: (chant: ChantEvent) => void,
   onGoal: (goal: GoalEvent) => void,
+  onMatchEnded: (event: MatchEndedEvent) => void,
 ): void {
   console.info("Overlay mock mode enabled with churn and chant simulation");
   const users = new Map<string, LocalMember>();
@@ -65,6 +67,14 @@ export function startMockMode(
   let sentBlockedExample = false;
   let lastGoalAt = Date.now() + 6_000;
   let goalCycle = 0;
+  let matchEnded = false;
+  const mockMatchTimer = window.setTimeout(() => {
+    if (matchEnded) return;
+    matchEnded = true;
+    const finalScore = { ...scoreBySide };
+    onMatchEnded({ status: "generating", finalScoreBySide: finalScore, reportUrl: "/report" });
+    window.setTimeout(() => onMatchEnded({ status: "ready", finalScoreBySide: finalScore, reportUrl: "/report", source: "template" }), 650);
+  }, 180_000);
   const scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
 
   for (let index = 0; index < INITIAL_USERS; index += 1) {
@@ -171,7 +181,7 @@ export function startMockMode(
     leftIds.clear();
   }, 250);
 
-  window.addEventListener("beforeunload", () => window.clearInterval(interval), { once: true });
+  window.addEventListener("beforeunload", () => { window.clearInterval(interval); window.clearTimeout(mockMatchTimer); }, { once: true });
 }
 
 function handleLocalMessage(

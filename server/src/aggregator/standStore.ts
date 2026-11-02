@@ -9,6 +9,10 @@ interface StandMember extends Omit<Fan, "seat"> {
   seat?: number;
 }
 
+export type StandMemberChange =
+  | { type: "joined" | "left"; userId: string; userName: string; side: Side }
+  | { type: "switched"; userId: string; userName: string; fromSide: Side; toSide: Side };
+
 const DISPLAY_CAP = 300;
 const SEATS_PER_SIDE = DISPLAY_CAP;
 const RECENT_JOIN_DURATION_MS = 3_000;
@@ -28,8 +32,13 @@ export class StandStore {
     SingingState | null
   >;
   private readonly scoreBySide: Record<Side, number> = { argentina: 0, mexico: 0 };
+  private memberChangeListener: ((change: StandMemberChange) => void) | undefined;
 
   constructor(private readonly inactivityTimeoutMs = 120_000) {}
+
+  onMemberChange(listener: (change: StandMemberChange) => void): void {
+    this.memberChangeListener = listener;
+  }
 
   handleChatEvent(event: ChatEvent): Side | undefined {
     const now = event.timestamp || Date.now();
@@ -45,7 +54,24 @@ export class StandStore {
       }
 
       const activityCount = (existing?.activityCount ?? 0) + 1;
-      if (existing) this.removeMember(event.userId);
+      if (existing) {
+        const fromSide = existing.side;
+        this.removeMember(event.userId, false);
+        this.memberChangeListener?.({
+          type: "switched",
+          userId: event.userId,
+          userName: event.userName,
+          fromSide,
+          toSide: requestedSide,
+        });
+      } else {
+        this.memberChangeListener?.({
+          type: "joined",
+          userId: event.userId,
+          userName: event.userName,
+          side: requestedSide,
+        });
+      }
       this.users.set(event.userId, {
         userId: event.userId,
         userName: event.userName,
@@ -166,10 +192,18 @@ export class StandStore {
     this.pendingLeftIds.clear();
   }
 
-  private removeMember(userId: string): void {
+  private removeMember(userId: string, countAsLeave = true): void {
     const member = this.users.get(userId);
     if (!member) return;
     this.users.delete(userId);
+    if (countAsLeave) {
+      this.memberChangeListener?.({
+        type: "left",
+        userId: member.userId,
+        userName: member.userName,
+        side: member.side,
+      });
+    }
     if (member.seat === undefined) return;
 
     this.occupiedSeats[member.side].delete(member.seat);

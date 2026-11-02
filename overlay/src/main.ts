@@ -18,9 +18,15 @@ async function startOverlay(host: HTMLElement): Promise<void> {
       setStandState,
       (chant) => renderer.playChant(chant),
       (goal) => renderer.playGoal(goal),
+      (event) => renderer.playMatchEnded(event),
     );
   } else {
-    connectToServer(setStandState, (chant) => renderer.playChant(chant), (goal) => renderer.playGoal(goal));
+    connectToServer(
+      setStandState,
+      (chant) => renderer.playChant(chant),
+      (goal) => renderer.playGoal(goal),
+      (event) => renderer.playMatchEnded(event),
+    );
   }
 }
 
