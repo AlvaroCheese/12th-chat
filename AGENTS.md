@@ -42,3 +42,4 @@ d. No secrets in the overlay or in git.
 e. All chant text must pass a filter before being displayed.
 f. The overlay must be usable with mock data when Twitch is not connected.
 g. Keep hand-written overlay mock logic in a single TypeScript source file. TypeScript build output belongs in workspace output directories (for example `overlay/dist-types/` or `server/dist/`), never under `src/`; remove stale compiled `.js` twins beside `.ts` files because Vite may resolve them first.
+h. Assign incoming fans to the least-occupied row, then the widest-spaced free seat with a deterministic user ID tie-break. Existing fans keep their seats; optional one-fan-per-second rebalancing is disabled.

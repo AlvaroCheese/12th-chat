@@ -93,6 +93,7 @@ export class StandRenderer {
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 34, fontWeight: "bold" },
   });
   private readonly debugText: Text;
+  private readonly fanLayer = new Container();
   private readonly effectsLayer = new Container();
   private readonly scoreboardBackground = new Graphics();
   private readonly scoreboard = new Text({
@@ -133,6 +134,7 @@ export class StandRenderer {
     });
     this.debugText.visible = debug;
     this.geometry = this.makeGeometry(width, height);
+    this.fanLayer.sortableChildren = true;
     this.title.anchor.set(0.5);
     this.scoreboard.anchor.set(0.5);
     this.goalBanner.anchor.set(0.5);
@@ -217,6 +219,7 @@ export class StandRenderer {
       });
     }
 
+    this.stage.addChild(this.fanLayer);
     this.effectsLayer.addChild(this.scoreboardBackground, this.scoreboard, this.goalBannerBackground, this.goalBanner, this.fullTimeBackground, this.fullTimeText);
     for (let index = 0; index < CONFETTI_POOL_SIZE; index += 1) {
       const graphic = new Graphics();
@@ -286,9 +289,16 @@ export class StandRenderer {
 
     this.updateJoinLabelText(now);
     if (this.debugText.visible) {
+      const rowsBySide: Record<Side, number[]> = { argentina: new Array(SEAT_ROWS).fill(0), mexico: new Array(SEAT_ROWS).fill(0) };
+      for (const fan of state.fans) {
+        const row = Math.floor(fan.seat / SEAT_COLUMNS);
+        const rowCounts = rowsBySide[fan.side];
+        if (rowCounts[row] !== undefined) rowCounts[row] += 1;
+      }
       this.debugText.text = SIDES.map((side) => {
         const pressure = state.pressure[side.id];
-        return `${side.name}: ${pressure.value.toFixed(2)} · ${pressure.mood}`;
+        const occupancy = rowsBySide[side.id].map((count) => `${Math.round((count / SEAT_COLUMNS) * 100)}%`).join(" ");
+        return `${side.name}: ${pressure.value.toFixed(2)} · ${pressure.mood}\nrows: ${occupancy}`;
       }).join("\n");
     }
     this.layout();
@@ -382,8 +392,8 @@ export class StandRenderer {
       panelWidth,
       panelHeight,
       halfWidth: panelWidth / SIDES.length,
-      seatTop: panelY + 112,
-      seatBottom: panelY + panelHeight - 54,
+      seatTop: panelY + 106,
+      seatBottom: panelY + panelHeight - 58,
       seatColumns: SEAT_COLUMNS,
       seatRows: SEAT_ROWS,
     };
@@ -458,13 +468,14 @@ export class StandRenderer {
     const { panelX, halfWidth, seatTop, seatBottom, seatColumns, seatRows } = this.geometry;
     const sideIndex = SIDES.findIndex((candidate) => candidate.id === side);
     const sideStart = panelX + sideIndex * halfWidth;
-    const cellWidth = (halfWidth - 26) / seatColumns;
+    const cellWidth = (halfWidth - 30) / (seatColumns + 0.5);
     const rowHeight = (seatBottom - seatTop) / (seatRows - 1);
     for (let seat = 0; seat < seatColumns * seatRows; seat += 1) {
       const row = Math.floor(seat / seatColumns);
       const column = seat % seatColumns;
-      markers.circle(sideStart + 13 + cellWidth * (column + 0.5), seatBottom - row * rowHeight + 7, 3)
-        .fill({ color: 0xffffff, alpha: 0.12 });
+      const stagger = row % 2 === 1 ? 0.5 : 0;
+      markers.circle(sideStart + 15 + cellWidth * (column + 0.5 + stagger), seatBottom - row * rowHeight + 7, 3)
+        .fill({ color: 0xffffff, alpha: 0.065 });
     }
   }
 
@@ -572,8 +583,7 @@ export class StandRenderer {
     const graphic = new Graphics();
     container.addChild(graphic);
     container.visible = false;
-    this.stage.addChild(container);
-      this.stage.addChild(this.effectsLayer);
+    this.fanLayer.addChild(container);
     const sprite: FanSprite = {
       container,
       graphic,
@@ -595,11 +605,16 @@ export class StandRenderer {
     const row = Math.floor(seat / seatColumns);
     const column = seat % seatColumns;
     const sideStart = panelX + sideIndex * halfWidth;
-    const cellWidth = (halfWidth - 26) / seatColumns;
+    const cellWidth = (halfWidth - 30) / (seatColumns + 0.5);
     const rowHeight = (seatBottom - seatTop) / (seatRows - 1);
-    sprite.baseX = sideStart + 13 + cellWidth * (column + 0.5);
-    sprite.baseY = seatBottom - row * rowHeight;
-    sprite.depth = 1 - 0.42 * (row / (seatRows - 1));
+    const stagger = row % 2 === 1 ? 0.5 : 0;
+    const jitterHash = hashString(`${side}:${seat}`);
+    const jitterX = ((jitterHash & 0xff) / 255 - 0.5) * 4;
+    const jitterY = (((jitterHash >>> 8) & 0xff) / 255 - 0.5) * 3;
+    sprite.baseX = sideStart + 15 + cellWidth * (column + 0.5 + stagger) + jitterX;
+    sprite.baseY = seatBottom - row * rowHeight + jitterY;
+    sprite.depth = 1 - 0.3 * (row / (seatRows - 1));
+    sprite.container.zIndex = sprite.baseY;
     sprite.container.position.set(sprite.baseX, sprite.baseY);
     if (!sprite.animationKind) sprite.container.scale.set(sprite.depth);
   }

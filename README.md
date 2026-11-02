@@ -11,6 +11,8 @@ Twitch lost the World Cup co-watching wave, and streamers cannot show the match 
 - A shareable post-match report at /report, generated from match statistics with OpenAI or a local template.
 - A deterministic 2.5-minute demo script and an optional simulated crowd alongside real Twitch chat.
 
+Incoming fans take seats in the least-occupied row, using the widest-spaced free seat in that row. Seat choices are deterministic; existing fans do not move when others join or leave. Optional gradual rebalancing is disabled.
+
 ## Architecture
 
     Twitch EventSub ─┐

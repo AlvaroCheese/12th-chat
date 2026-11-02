@@ -16,6 +16,8 @@ import {
 const INITIAL_USERS = 500;
 const DISPLAY_CAP = 300;
 const SEATS_PER_SIDE = DISPLAY_CAP;
+const SEAT_COLUMNS = 15;
+const SEAT_ROWS = SEATS_PER_SIDE / SEAT_COLUMNS;
 const MOCK_INACTIVITY_MS = 12_000;
 const CHANT_WINDOW_MS = 4_000;
 const CHANT_THRESHOLD = 3;
@@ -341,14 +343,58 @@ function promoteWaiting(
       .sort((left, right) => left.visible - right.visible || (left.member!.joinedAt - right.member!.joinedAt));
     const next = candidates[0];
     if (!next?.member) return;
-    let seat = 0;
-    while (occupiedSeats[next.side].has(seat)) seat += 1;
+    const seat = findBalancedSeat(occupiedSeats[next.side], next.member.userId);
+    if (seat === undefined) return;
     next.member.seat = seat;
     occupiedSeats[next.side].set(seat, next.member.userId);
     joinedIds.add(next.member.userId);
     recentJoins.push({ userId: next.member.userId, userName: next.member.userName, side: next.side, timestamp: Date.now() });
     if (recentJoins.length > 20) recentJoins.shift();
   }
+}
+
+function findBalancedSeat(occupied: Map<number, string>, userId: string): number | undefined {
+  const rowCounts = new Array<number>(SEAT_ROWS).fill(0);
+  const columnsByRow = Array.from({ length: SEAT_ROWS }, () => [] as number[]);
+  for (const seat of occupied.keys()) {
+    const row = Math.floor(seat / SEAT_COLUMNS);
+    const column = seat % SEAT_COLUMNS;
+    rowCounts[row] = (rowCounts[row] ?? 0) + 1;
+    columnsByRow[row]?.push(column);
+  }
+
+  const lowestCount = Math.min(...rowCounts);
+  const rowStart = hashString(userId) % SEAT_ROWS;
+  let selectedRow: number | undefined;
+  let bestRowTie = Number.POSITIVE_INFINITY;
+  for (let row = 0; row < SEAT_ROWS; row += 1) {
+    if (rowCounts[row] !== lowestCount) continue;
+    const tie = (row - rowStart + SEAT_ROWS) % SEAT_ROWS;
+    if (tie < bestRowTie) {
+      selectedRow = row;
+      bestRowTie = tie;
+    }
+  }
+  if (selectedRow === undefined || lowestCount >= SEAT_COLUMNS) return undefined;
+
+  const occupiedColumns = columnsByRow[selectedRow] ?? [];
+  const columnStart = hashString(`${userId}:column`) % SEAT_COLUMNS;
+  let selectedColumn: number | undefined;
+  let bestDistance = -1;
+  let bestColumnTie = Number.POSITIVE_INFINITY;
+  for (let column = 0; column < SEAT_COLUMNS; column += 1) {
+    if (occupied.has(selectedRow * SEAT_COLUMNS + column)) continue;
+    const distance = occupiedColumns.length === 0
+      ? SEAT_COLUMNS
+      : Math.min(...occupiedColumns.map((occupiedColumn) => Math.abs(column - occupiedColumn)));
+    const tie = (column - columnStart + SEAT_COLUMNS) % SEAT_COLUMNS;
+    if (distance > bestDistance || (distance === bestDistance && tie < bestColumnTie)) {
+      selectedColumn = column;
+      bestDistance = distance;
+      bestColumnTie = tie;
+    }
+  }
+  return selectedColumn === undefined ? undefined : selectedRow * SEAT_COLUMNS + selectedColumn;
 }
 
 function createSnapshot(
@@ -441,6 +487,15 @@ function filterLocalChant(text: string): string | null {
 function normalizeChant(text: string): string {
   return text.toLocaleLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "")
     .replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/([\p{L}\p{N}])\1+/giu, "$1").replace(/\s+/gu, " ").trim();
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function chantCycleText(now: number): string {

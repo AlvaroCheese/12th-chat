@@ -15,6 +15,8 @@ export type StandMemberChange =
 
 const DISPLAY_CAP = 300;
 const SEATS_PER_SIDE = DISPLAY_CAP;
+const SEAT_COLUMNS = 15;
+const SEAT_ROWS = SEATS_PER_SIDE / SEAT_COLUMNS;
 const RECENT_JOIN_DURATION_MS = 3_000;
 const RECENT_JOIN_LIMIT = 20;
 
@@ -243,7 +245,7 @@ export class StandStore {
       const candidate = candidates[0];
       if (!candidate?.member) return;
 
-      const seat = this.findFirstFreeSeat(candidate.side);
+      const seat = this.findBalancedSeat(candidate.side, candidate.member.userId);
       if (seat === undefined) return;
       candidate.member.seat = seat;
       this.occupiedSeats[candidate.side].set(seat, candidate.member.userId);
@@ -258,14 +260,61 @@ export class StandStore {
     }
   }
 
-  private findFirstFreeSeat(side: Side): number | undefined {
-    for (let seat = 0; seat < SEATS_PER_SIDE; seat += 1) {
-      if (!this.occupiedSeats[side].has(seat)) return seat;
+  private findBalancedSeat(side: Side, userId: string): number | undefined {
+    const occupied = this.occupiedSeats[side];
+    const rowCounts = new Array<number>(SEAT_ROWS).fill(0);
+    const columnsByRow = Array.from({ length: SEAT_ROWS }, () => [] as number[]);
+    for (const seat of occupied.keys()) {
+      const row = Math.floor(seat / SEAT_COLUMNS);
+      const column = seat % SEAT_COLUMNS;
+      rowCounts[row] = (rowCounts[row] ?? 0) + 1;
+      columnsByRow[row]?.push(column);
     }
-    return undefined;
+
+    const lowestCount = Math.min(...rowCounts);
+    const rowStart = hashString(userId) % SEAT_ROWS;
+    let selectedRow: number | undefined;
+    let bestRowTie = Number.POSITIVE_INFINITY;
+    for (let row = 0; row < SEAT_ROWS; row += 1) {
+      if (rowCounts[row] !== lowestCount) continue;
+      const tie = (row - rowStart + SEAT_ROWS) % SEAT_ROWS;
+      if (tie < bestRowTie) {
+        selectedRow = row;
+        bestRowTie = tie;
+      }
+    }
+    if (selectedRow === undefined || lowestCount >= SEAT_COLUMNS) return undefined;
+
+    const occupiedColumns = columnsByRow[selectedRow] ?? [];
+    const columnStart = hashString(`${userId}:column`) % SEAT_COLUMNS;
+    let selectedColumn: number | undefined;
+    let bestDistance = -1;
+    let bestColumnTie = Number.POSITIVE_INFINITY;
+    for (let column = 0; column < SEAT_COLUMNS; column += 1) {
+      if (occupied.has(selectedRow * SEAT_COLUMNS + column)) continue;
+      const distance = occupiedColumns.length === 0
+        ? SEAT_COLUMNS
+        : Math.min(...occupiedColumns.map((occupiedColumn) => Math.abs(column - occupiedColumn)));
+      const tie = (column - columnStart + SEAT_COLUMNS) % SEAT_COLUMNS;
+      if (distance > bestDistance || (distance === bestDistance && tie < bestColumnTie)) {
+        selectedColumn = column;
+        bestDistance = distance;
+        bestColumnTie = tie;
+      }
+    }
+    return selectedColumn === undefined ? undefined : selectedRow * SEAT_COLUMNS + selectedColumn;
   }
 
   private displayedFanCount(): number {
     return SIDES.reduce((total, side) => total + this.occupiedSeats[side.id].size, 0);
   }
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
