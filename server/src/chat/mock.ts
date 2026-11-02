@@ -1,10 +1,14 @@
 import type { ChatEvent, Side } from "@twitch-graderia/shared";
 import { chatEventBus } from "./eventBus.js";
+import { getPressureConfig, isMockPressureActive } from "./pressure.js";
 
 const mockUsersBySide: Record<Side, string[]> = { argentina: [], mexico: [] };
 let nextUserIndex = 0;
 let leaveCursor = 0;
 let switchCursor = 12;
+let mockGoalCycle = 0;
+let pressureActivityCursor = 0;
+const pressureMockConfig = getPressureConfig(true);
 
 export function startMockChat(): void {
   console.info("Mock chat generator started (500 initial joiners with continuous churn)");
@@ -62,8 +66,22 @@ export function startMockChat(): void {
   }, 7_000);
 
   setInterval(() => {
-    emitMockEvent("AlbiFan125", "!goal argentina");
+    const side: Side = mockGoalCycle % 2 === 0 ? "argentina" : "mexico";
+    emitMockEvent(side === "argentina" ? "AlbiFan125" : "TriFan250", `!goal ${side}`);
+    mockGoalCycle += 1;
   }, 18_000);
+
+  setInterval(() => {
+    for (const side of ["argentina", "mexico"] as const) {
+      if (!isMockPressureActive(side, Date.now())) continue;
+      const candidates = mockUsersBySide[side].slice(-100);
+      for (let count = 0; count < pressureMockConfig.mockBurstMessages && candidates.length > 0; count += 1) {
+        const userName = candidates[pressureActivityCursor % candidates.length];
+        if (userName) emitMockEvent(userName, `crowd activity ${pressureActivityCursor}`);
+        pressureActivityCursor += 1;
+      }
+    }
+  }, pressureMockConfig.mockBurstIntervalMs);
 }
 
 function addMockUser(index: number): void {

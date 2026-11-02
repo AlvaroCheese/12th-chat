@@ -154,6 +154,10 @@ export class StandStore {
         SingingState | null
       >,
       scoreBySide: { ...this.scoreBySide },
+      pressure: {
+        argentina: { value: 0, mood: "cold" },
+        mexico: { value: 0, mood: "cold" },
+      },
     };
   }
 

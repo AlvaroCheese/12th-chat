@@ -11,7 +11,7 @@ if (!appElement) {
 
 async function startOverlay(host: HTMLElement): Promise<void> {
   const query = new URLSearchParams(window.location.search);
-  const renderer = await createScene(host, query.get("mute") === "1");
+  const renderer = await createScene(host, query.get("mute") === "1", query.get("debug") === "1");
   subscribeToStandState((state) => renderer.update(state));
   if (query.get("mock") === "1") {
     startMockMode(

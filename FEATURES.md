@@ -89,8 +89,8 @@ Collaborative tifo, penalty shootout mode, capos (top supporters in the front ro
 | **M1** | F1 with mock mode | Real and fake messages reach the server | Done |
 | **M2** | F2 | Stand with sides and aggregated crowd | Done |
 | **M3** | F3 | Animated and filtered chants | Done |
-| **M4** | F4 | Confetti by command and `/control` panel | In progress |
-| **M5** | F5 | Visible pressure meter | Pending |
+| **M4** | F4 | Confetti by command and `/control` panel | Done |
+| **M5** | F5 | Visible pressure meter | In progress |
 | **M6** | F6 | AI report card | Pending |
 | **M7** | Polish | README, demo script, deployment and video | Pending |
 

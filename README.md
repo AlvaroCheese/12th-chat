@@ -69,6 +69,14 @@ The broadcaster or a moderator can type `!goal argentina` or `!goal mexico` to t
 
 When `MOCK_CHAT=1`, the server periodically triggers a goal. The overlay-only `?mock=1` mode also simulates goals locally. To test a goal immediately, use the `/control` page or send `!goal argentina` as a moderator in Twitch chat; use `!start` or the reset button to clear the score.
 
+## Pressure and mood
+
+The server counts non-command messages from joined viewers over a rolling window, normalizes activity by the side's fan count with a floor for small stands, then smooths it into a 0–1 pressure score. Mood uses hysteresis: cold below about 0.2, hot above about 0.72, and calm between them. Chants and goals provide short pressure boosts. Shared tuning values live in [shared/src/pressureConfig.ts](./shared/src/pressureConfig.ts) and are applied by [server/src/chat/pressure.ts](./server/src/chat/pressure.ts): live mode uses a 10-second window and 0.2 smoothing; mock mode reacts faster with a 2.5-second window and 0.55 smoothing. Both sides cycle through about 20 seconds of activity and 15 seconds of quiet with an offset between them.
+
+The pressure bar fills smoothly and changes color with mood. Cold stands slump and show empty seats more clearly; hot stands bob more energetically. Add `?debug=1` to the overlay URL to show each side's current pressure and mood as text.
+
+To test locally, run the server with `MOCK_CHAT=1` and the overlay without `?mock=1`, or open the overlay-only mock with `?mock=1&debug=1`. Watch one side enter its quiet phase while the offset side stays active, then recover on the next activity phase. Mock goals continue alternating between Argentina and Mexico.
+
 ## Features and milestones
 
 See [FEATURES.md](./FEATURES.md) for the feature list and milestone plan.

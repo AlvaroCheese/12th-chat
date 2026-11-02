@@ -12,6 +12,7 @@ import { ChantDetector } from "./chat/chantDetector.js";
 import { getChantConfig, getFanInactivityTimeoutMs } from "./config/chants.js";
 import { GoalController, parseGoalSide } from "./match/goalController.js";
 import { registerControlRoutes } from "./routes/control.js";
+import { getPressureConfig, PressureMeter } from "./chat/pressure.js";
 
 const app = Fastify({
   logger: {
@@ -35,12 +36,15 @@ const mockChatEnabled = env.MOCK_CHAT === "1";
 const standStore = new StandStore(getFanInactivityTimeoutMs(mockChatEnabled));
 const chantDetector = new ChantDetector(standStore, getChantConfig(mockChatEnabled));
 const goalController = new GoalController(standStore);
-const standAggregator = new StandAggregator(io, standStore, (snapshot) => {
+const pressureMeter = new PressureMeter(getPressureConfig(mockChatEnabled));
+const standAggregator = new StandAggregator(io, standStore, pressureMeter, (snapshot) => {
   app.log.debug(
     {
       fans: snapshot.fans.length,
       argentina: snapshot.counts.argentina,
       mexico: snapshot.counts.mexico,
+      argentinaPressure: snapshot.pressure.argentina.value,
+      mexicoPressure: snapshot.pressure.mexico.value,
     },
     "StandState snapshot emitted",
   );
@@ -58,6 +62,7 @@ authProvider.onRefreshFailure(() => {
 app.get("/health", async () => ({ ok: true }));
 registerTwitchAuthRoutes(app, authProvider, chatService, tokenStore);
 registerControlRoutes(app, goalController, standStore, (side, scoreBySide) => {
+  pressureMeter.boost(side, "goal");
   io.emit("goal", { side, scoreBySide });
 });
 
@@ -68,6 +73,7 @@ chatEventBus.on("chat", (event) => {
     const side = parseGoalSide(event.text);
     const goal = side && goalController.goal(side);
     if (goal) {
+      pressureMeter.boost(goal.side, "goal");
       io.emit("goal", goal);
       app.log.info({ side: goal.side }, "Goal triggered");
     }
@@ -81,8 +87,10 @@ chatEventBus.on("chat", (event) => {
 
   const side = standStore.handleChatEvent(event);
   if (side) {
+    pressureMeter.recordMessage(side, event.timestamp || Date.now());
     const chant = chantDetector.handle(event, side);
     if (chant) {
+      pressureMeter.boost(side, "chant");
       io.emit("chant", chant);
       app.log.info({ side: chant.side, intensity: chant.intensity }, "Chant triggered");
     }

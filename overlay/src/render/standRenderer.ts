@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { SIDES, type ChantEvent, type Fan, type GoalEvent, type Side, type StandState } from "@twitch-graderia/shared";
+import { SIDES, type ChantEvent, type Fan, type GoalEvent, type PressureMood, type PressureState, type Side, type StandState } from "@twitch-graderia/shared";
 
 interface SideVisuals {
   background: Graphics;
@@ -8,6 +8,19 @@ interface SideVisuals {
   joinLabel: Text;
   overflowBackground: Graphics;
   overflowLabel: Text;
+  pressureTrack: Graphics;
+  pressureFill: Graphics;
+  targetPressure: number;
+  visiblePressure: number;
+  targetMood: PressureMood;
+  targetEnergy: number;
+  moodEnergy: number;
+  moodDim: number;
+  targetDim: number;
+  seatVisibility: number;
+  targetSeatVisibility: number;
+  meterColor: number;
+  targetMeterColor: number;
   bannerBackground: Graphics;
   bannerText: Text;
   bannerEndsAt: number;
@@ -79,6 +92,7 @@ export class StandRenderer {
     text: "Gradería",
     style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 34, fontWeight: "bold" },
   });
+  private readonly debugText: Text;
   private readonly effectsLayer = new Container();
   private readonly scoreboardBackground = new Graphics();
   private readonly scoreboard = new Text({
@@ -108,8 +122,13 @@ export class StandRenderer {
   private goalAnimation: GoalAnimation | undefined;
   private scoreboardScaleStartedAt = 0;
 
-  constructor(private readonly stage: Container, width: number, height: number, muted = false) {
+  constructor(private readonly stage: Container, width: number, height: number, muted = false, debug = false) {
     this.muted = muted;
+    this.debugText = new Text({
+      text: "",
+      style: { fill: "#ffffff", fontFamily: "monospace", fontSize: 12, fontWeight: "bold" },
+    });
+    this.debugText.visible = debug;
     this.geometry = this.makeGeometry(width, height);
     this.title.anchor.set(0.5);
     this.scoreboard.anchor.set(0.5);
@@ -130,6 +149,8 @@ export class StandRenderer {
         style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 13 },
       });
       const overflowBackground = new Graphics();
+      const pressureTrack = new Graphics();
+      const pressureFill = new Graphics();
       const overflowLabel = new Text({
         text: "",
         style: { fill: "#ffffff", fontFamily: "Arial, sans-serif", fontSize: 15, fontWeight: "bold" },
@@ -156,6 +177,8 @@ export class StandRenderer {
         joinLabel,
         overflowBackground,
         overflowLabel,
+        pressureTrack,
+        pressureFill,
         bannerBackground,
         bannerText,
       );
@@ -173,6 +196,19 @@ export class StandRenderer {
         bannerIntensity: 0,
         displayedCount: 0,
         targetCount: 0,
+        pressureTrack,
+        pressureFill,
+        targetPressure: 0,
+        visiblePressure: 0,
+        targetMood: "cold",
+        targetEnergy: 0.12,
+        moodEnergy: 0.12,
+        moodDim: 0.3,
+        targetDim: 0.3,
+        seatVisibility: 0.85,
+        targetSeatVisibility: 0.85,
+        meterColor: 0x5ba6c2,
+        targetMeterColor: 0x5ba6c2,
       });
     }
 
@@ -191,7 +227,7 @@ export class StandRenderer {
       });
       this.effectsLayer.addChild(graphic);
     }
-    this.effectsLayer.addChild(this.title);
+    this.effectsLayer.addChild(this.title, this.debugText);
     this.stage.addChild(this.effectsLayer);
     this.layout();
     if (!muted) this.startProceduralCrowdSound();
@@ -214,6 +250,7 @@ export class StandRenderer {
       const visuals = this.visuals.get(side.id);
       if (!visuals) continue;
       visuals.targetCount = state.counts[side.id];
+      this.setMoodTarget(visuals, state.pressure[side.id]);
       const singing = state.singing[side.id];
       if (singing && singing.endsAt > now) {
         if (visuals.bannerText.text !== singing.text) this.setBanner(side.id, singing, now);
@@ -243,6 +280,12 @@ export class StandRenderer {
     }
 
     this.updateJoinLabelText(now);
+    if (this.debugText.visible) {
+      this.debugText.text = SIDES.map((side) => {
+        const pressure = state.pressure[side.id];
+        return `${side.name}: ${pressure.value.toFixed(2)} · ${pressure.mood}`;
+      }).join("\n");
+    }
     this.layout();
   }
 
@@ -279,6 +322,7 @@ export class StandRenderer {
     this.lastTickAt = now;
     this.updateJoinLabelText(now);
     this.updateCounters(deltaSeconds);
+    this.updateMood(deltaSeconds);
     this.animateSprites(now);
     this.animateConfetti(now);
     this.animateGoal(now);
@@ -309,7 +353,8 @@ export class StandRenderer {
     this.panel.clear().roundRect(panelX, panelY, panelWidth, panelHeight, 22)
       .fill({ color: 0x081421, alpha: 0.84 })
       .stroke({ color: 0xffffff, alpha: 0.2, width: 2 });
-    this.title.position.set(panelX + panelWidth / 2, 30);
+    this.title.position.set(panelX + panelWidth / 2, 27);
+    this.debugText.position.set(panelX + 10, 42);
     this.scoreboard.position.set(panelX + panelWidth / 2, panelY + 33);
     this.scoreboardBackground.clear()
       .roundRect(panelX + panelWidth / 2 - 142, panelY + 16, 284, 35, 12)
@@ -336,6 +381,14 @@ export class StandRenderer {
       visuals.header.position.set(sideStart + halfWidth / 2, panelY + 26);
       visuals.joinLabel.anchor.set(0.5);
       visuals.joinLabel.position.set(sideStart + halfWidth / 2, panelY + 52);
+      const meterX = sideStart + 18;
+      const meterY = panelY + panelHeight - 11;
+      const meterWidth = halfWidth - 36;
+      visuals.pressureTrack.clear().roundRect(meterX, meterY, meterWidth, 5, 2.5)
+        .fill({ color: 0xffffff, alpha: 0.2 });
+      visuals.pressureFill.clear().roundRect(0, 0, meterWidth, 5, 2.5)
+        .fill({ color: 0xffffff });
+      visuals.pressureFill.position.set(meterX, meterY);
       visuals.bannerText.anchor.set(0.5);
       visuals.bannerText.position.set(sideStart + halfWidth / 2, panelY + 83);
       visuals.bannerText.style.wordWrapWidth = Math.max(150, halfWidth - 50);
@@ -345,6 +398,9 @@ export class StandRenderer {
         .fill({ color: side.primaryColor, alpha: 0.9 });
 
       this.drawEmptySeats(visuals.seatMarkers, side.id);
+      visuals.pressureTrack.alpha = 0.9;
+      visuals.pressureFill.tint = visuals.meterColor;
+      visuals.pressureFill.scale.set(visuals.visiblePressure, 1);
       this.drawOverflow(visuals, side.id, side.primaryColor, side.secondaryColor, sideStart, panelY, panelHeight, halfWidth);
     }
   }
@@ -523,6 +579,8 @@ export class StandRenderer {
 
       const singing = sprite.side ? this.state?.singing[sprite.side] : null;
       const goal = this.goalAnimation;
+      const visuals = sprite.side ? this.visuals.get(sprite.side) : undefined;
+      const activeChant = singing && singing.endsAt > now;
       let goalBounce = 0;
       if (goal && goal.endsAt > now && sprite.animationKind === undefined) {
         const elapsed = now - goal.startedAt;
@@ -533,14 +591,56 @@ export class StandRenderer {
         } else {
           sprite.container.alpha = 0.48;
         }
-      } else if (sprite.animationKind === undefined) {
+      } else if (sprite.animationKind === undefined && activeChant) {
         sprite.container.alpha = 1;
+      } else if (sprite.animationKind === undefined) {
+        sprite.container.alpha = 1 - (visuals?.moodDim ?? 0);
       }
-      const chantBounce = singing && singing.endsAt > now
+      const chantBounce = activeChant
         ? Math.abs(Math.sin(now * (0.008 + singing.intensity * 0.009) + sprite.bouncePhase)) * (2 + 8 * singing.intensity)
         : 0;
       const slump = goal && goal.endsAt > now && sprite.side !== goal.side ? 5 : 0;
-      if (!sprite.animationKind) sprite.container.position.y = sprite.baseY + slump - goalBounce - chantBounce;
+      const moodEnergy = visuals?.moodEnergy ?? 0.45;
+      const idleFrequency = 0.002 + moodEnergy * 0.006;
+      const idleBob = Math.sin(now * idleFrequency + sprite.bouncePhase) * (0.8 + moodEnergy * 4);
+      const moodSlump = (1 - moodEnergy) * 4;
+      if (!sprite.animationKind) {
+        if (goal && goal.endsAt > now) {
+          sprite.container.position.y = sprite.baseY + slump - goalBounce - chantBounce;
+        } else if (activeChant) {
+          sprite.container.position.y = sprite.baseY - chantBounce;
+        } else {
+          sprite.container.position.y = sprite.baseY + moodSlump - idleBob;
+          sprite.container.scale.set(sprite.depth, sprite.depth * (1 + moodEnergy * Math.abs(idleBob) * 0.012));
+        }
+      }
+    }
+  }
+
+  private setMoodTarget(visuals: SideVisuals, pressure: PressureState): void {
+    visuals.targetPressure = Math.max(0, Math.min(1, pressure.value));
+    visuals.targetMood = pressure.mood;
+    visuals.targetEnergy = pressure.mood === "cold" ? 0.08 : pressure.mood === "hot" ? 1 : 0.42;
+    visuals.targetDim = pressure.mood === "cold" ? 0.32 : 0;
+    visuals.targetSeatVisibility = pressure.mood === "cold" ? 0.9 : pressure.mood === "hot" ? 0.22 : 0.38;
+    visuals.targetMeterColor = pressure.mood === "cold" ? 0x5ba6c2 : pressure.mood === "hot" ? 0xff8d3b : 0x71ca93;
+  }
+
+  private updateMood(deltaSeconds: number): void {
+    const tween = 1 - Math.exp(-deltaSeconds / 1);
+    const goalActive = this.goalAnimation !== undefined && this.goalAnimation.endsAt > Date.now();
+    for (const side of SIDES) {
+      const visuals = this.visuals.get(side.id);
+      if (!visuals) continue;
+      visuals.visiblePressure += (visuals.targetPressure - visuals.visiblePressure) * tween;
+      visuals.moodEnergy += (visuals.targetEnergy - visuals.moodEnergy) * tween;
+      visuals.moodDim += (visuals.targetDim - visuals.moodDim) * tween;
+      visuals.seatVisibility += (visuals.targetSeatVisibility - visuals.seatVisibility) * tween;
+      visuals.meterColor = mixColor(visuals.meterColor, visuals.targetMeterColor, tween);
+      visuals.pressureFill.scale.x = visuals.visiblePressure;
+      visuals.pressureFill.tint = visuals.meterColor;
+      visuals.background.alpha = goalActive ? (this.goalAnimation?.side === side.id ? 1 : 0.62) : 0.65 + visuals.moodEnergy * 0.35;
+      visuals.seatMarkers.alpha = goalActive ? 0.24 : visuals.seatVisibility;
     }
   }
 
@@ -774,4 +874,18 @@ function hashString(value: string): number {
 
 function seatKey(side: Side, seat: number): string {
   return `${side}:${seat}`;
+}
+
+function mixColor(current: number, target: number, amount: number): number {
+  const clamped = Math.max(0, Math.min(1, amount));
+  const currentRed = (current >> 16) & 0xff;
+  const currentGreen = (current >> 8) & 0xff;
+  const currentBlue = current & 0xff;
+  const targetRed = (target >> 16) & 0xff;
+  const targetGreen = (target >> 8) & 0xff;
+  const targetBlue = target & 0xff;
+  const red = Math.round(currentRed + (targetRed - currentRed) * clamped);
+  const green = Math.round(currentGreen + (targetGreen - currentGreen) * clamped);
+  const blue = Math.round(currentBlue + (targetBlue - currentBlue) * clamped);
+  return (red << 16) | (green << 8) | blue;
 }

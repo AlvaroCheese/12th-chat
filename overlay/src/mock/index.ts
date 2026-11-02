@@ -1,8 +1,11 @@
 import {
   SIDES,
+  PRESSURE_CONFIG,
   type ChantEvent,
   type Fan,
   type GoalEvent,
+  type PressureMood,
+  type PressureState,
   type RecentJoin,
   type Side,
   type SingingState,
@@ -19,6 +22,7 @@ const CHANT_COOLDOWN_MS = 4_000;
 const CHANT_DURATION_MS = 5_000;
 const RECENT_JOIN_MS = 3_000;
 const BLOCKED_CHANTS = new Set(["blocked placeholder chant", "sample prohibited phrase"]);
+const MOCK_PRESSURE = PRESSURE_CONFIG.mock;
 
 interface LocalMember extends Fan {
   lastActive: number;
@@ -39,6 +43,15 @@ export function startMockMode(
   const singing: Record<Side, SingingState | null> = { argentina: null, mexico: null };
   const chantParticipants = new Map<string, Map<string, number>>();
   const chantCooldowns = new Map<string, number>();
+  const pressureEvents: Record<Side, number[]> = { argentina: [], mexico: [] };
+  const pressureBoosts: Record<Side, { value: number; endsAt: number; durationMs: number }> = {
+    argentina: { value: 0, endsAt: 0, durationMs: 0 },
+    mexico: { value: 0, endsAt: 0, durationMs: 0 },
+  };
+  let pressure: Record<Side, PressureState> = {
+    argentina: { value: 0, mood: "cold" },
+    mexico: { value: 0, mood: "cold" },
+  };
   let nextUserId = 0;
   let activityCursor = 0;
   let leaveCursor = 0;
@@ -85,12 +98,15 @@ export function startMockMode(
       lastWaveAt = now;
     }
 
-    if (now - lastActivityAt >= 900) {
-      const active = [...users.values()];
-      for (let count = 0; count < 6 && active.length > 0; count += 1) {
-        const member = active[activityCursor % active.length];
-        if (member) handleLocalMessage(member, `chat message ${activityCursor}`, now);
-        activityCursor += 11;
+    if (now - lastActivityAt >= MOCK_PRESSURE.mockBurstIntervalMs) {
+      for (const side of SIDES) {
+        if (!isMockPressureActive(side.id, now)) continue;
+        const active = [...users.values()].filter((member) => member.side === side.id);
+        for (let count = 0; count < MOCK_PRESSURE.mockBurstMessages && active.length > 0; count += 1) {
+          const member = active[activityCursor % active.length];
+          if (member) handleLocalMessage(member, `chat message ${activityCursor}`, now, onChant, chantParticipants, chantCooldowns, singing, pressureEvents, pressureBoosts);
+          activityCursor += 11;
+        }
       }
       lastActivityAt = now;
     }
@@ -119,19 +135,19 @@ export function startMockMode(
     if (now - lastChantAt >= 8_000) {
       const side: Side = Math.floor(now / 8_000) % 2 === 0 ? "argentina" : "mexico";
       const group = [...users.values()].filter((member) => member.side === side).slice(-5);
-      for (const member of group) handleLocalMessage(member, chantCycleText(now), now, onChant, chantParticipants, chantCooldowns, singing);
+      for (const member of group) handleLocalMessage(member, chantCycleText(now), now, onChant, chantParticipants, chantCooldowns, singing, pressureEvents, pressureBoosts);
       lastChantAt = now;
     }
 
     if (now - lastIsolatedAt >= 2_700) {
       const member = [...users.values()][0];
-      if (member) handleLocalMessage(member, "una voz aislada", now, onChant, chantParticipants, chantCooldowns, singing);
+      if (member) handleLocalMessage(member, "una voz aislada", now, onChant, chantParticipants, chantCooldowns, singing, pressureEvents, pressureBoosts);
       lastIsolatedAt = now;
     }
 
     if (!sentBlockedExample && now > lastChantAt + 1_000) {
       const member = [...users.values()].find((candidate) => candidate.side === "argentina");
-      if (member) handleLocalMessage(member, "blocked placeholder chant", now, onChant, chantParticipants, chantCooldowns, singing);
+      if (member) handleLocalMessage(member, "blocked placeholder chant", now, onChant, chantParticipants, chantCooldowns, singing, pressureEvents, pressureBoosts);
       sentBlockedExample = true;
     }
 
@@ -139,6 +155,7 @@ export function startMockMode(
       const side: Side = goalCycle % 2 === 0 ? "argentina" : "mexico";
       scoreBySide[side] += 1;
       onGoal({ side, scoreBySide: { ...scoreBySide } });
+      pressureBoosts[side] = { value: MOCK_PRESSURE.goalBoost, endsAt: now + MOCK_PRESSURE.goalBoostMs, durationMs: MOCK_PRESSURE.goalBoostMs };
       goalCycle += 1;
       lastGoalAt = now;
     }
@@ -148,7 +165,8 @@ export function startMockMode(
     }
     while (recentJoins[0] && recentJoins[0].timestamp < now - RECENT_JOIN_MS) recentJoins.shift();
 
-    setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing, scoreBySide));
+    pressure = updateMockPressure(now, users, pressureEvents, pressureBoosts, pressure);
+    setState(createSnapshot(users, occupiedSeats, recentJoins, joinedIds, leftIds, singing, scoreBySide, pressure));
     joinedIds.clear();
     leftIds.clear();
   }, 250);
@@ -164,8 +182,11 @@ function handleLocalMessage(
   participantsByChant?: Map<string, Map<string, number>>,
   cooldowns?: Map<string, number>,
   singing?: Record<Side, SingingState | null>,
+  pressureEvents?: Record<Side, number[]>,
+  pressureBoosts?: Record<Side, { value: number; endsAt: number; durationMs: number }>,
 ): void {
   member.lastActive = now;
+  pressureEvents?.[member.side].push(now);
   if (text.startsWith("!") || text.trim().length < 3) return;
   const filtered = filterLocalChant(text);
   if (!filtered) return;
@@ -198,6 +219,11 @@ function handleLocalMessage(
   };
   cooldowns.set(key, now);
   singing[member.side] = { text: filtered, intensity: chant.intensity, endsAt: now + CHANT_DURATION_MS };
+  if (pressureBoosts) pressureBoosts[member.side] = {
+    value: MOCK_PRESSURE.chantBoost,
+    endsAt: now + MOCK_PRESSURE.chantBoostMs,
+    durationMs: MOCK_PRESSURE.chantBoostMs,
+  };
   onChant?.(chant);
 }
 
@@ -273,6 +299,7 @@ function createSnapshot(
   leftIds: Set<string>,
   singing: Record<Side, SingingState | null>,
   scoreBySide: Record<Side, number>,
+  pressure: Record<Side, PressureState>,
 ): StandState {
   const counts: Record<Side, number> = { argentina: 0, mexico: 0 };
   for (const member of users.values()) counts[member.side] += 1;
@@ -295,7 +322,54 @@ function createSnapshot(
     leftIds: [...leftIds],
     singing: { argentina: singing.argentina && { ...singing.argentina }, mexico: singing.mexico && { ...singing.mexico } },
     scoreBySide: { ...scoreBySide },
+    pressure: { argentina: { ...pressure.argentina }, mexico: { ...pressure.mexico } },
   };
+}
+
+function isMockPressureActive(side: Side, now: number): boolean {
+  const cycle = MOCK_PRESSURE.mockHighMs + MOCK_PRESSURE.mockQuietMs;
+  const offset = side === "mexico" ? MOCK_PRESSURE.mockSideOffsetMs : 0;
+  return ((now + offset) % cycle) < MOCK_PRESSURE.mockHighMs;
+}
+
+function updateMockPressure(
+  now: number,
+  users: Map<string, LocalMember>,
+  eventsBySide: Record<Side, number[]>,
+  boosts: Record<Side, { value: number; endsAt: number; durationMs: number }>,
+  previous: Record<Side, PressureState>,
+): Record<Side, PressureState> {
+  const next = { argentina: { ...previous.argentina }, mexico: { ...previous.mexico } };
+  for (const side of SIDES) {
+    const events = eventsBySide[side.id];
+    while (events[0] !== undefined && events[0] <= now - MOCK_PRESSURE.windowMs) events.shift();
+    const fans = [...users.values()].filter((member) => member.side === side.id).length;
+    const rate = events.length / (MOCK_PRESSURE.windowMs / 1_000);
+    const targetRate = Math.max(fans, MOCK_PRESSURE.minimumFans) * MOCK_PRESSURE.targetMessagesPerFanPerWindow / (MOCK_PRESSURE.windowMs / 1_000);
+    let target = Math.min(1, rate / targetRate);
+    if (boosts[side.id].endsAt > now) {
+      target = Math.max(target, boosts[side.id].value * (boosts[side.id].endsAt - now) / boosts[side.id].durationMs);
+    } else {
+      boosts[side.id] = { value: 0, endsAt: 0, durationMs: 0 };
+    }
+    const value = previous[side.id].value + (target - previous[side.id].value) * MOCK_PRESSURE.smoothingAlpha;
+    next[side.id] = { value, mood: nextMockMood(previous[side.id].mood, value) };
+  }
+  return next;
+}
+
+function nextMockMood(current: PressureMood, value: number): PressureMood {
+  if (current === "cold") {
+    if (value >= MOCK_PRESSURE.hotEnter) return "hot";
+      return value >= MOCK_PRESSURE.coldExit ? "calm" : "cold";
+  }
+  if (current === "hot") {
+    if (value <= MOCK_PRESSURE.coldEnter) return "cold";
+    return value <= MOCK_PRESSURE.hotExit ? "calm" : "hot";
+  }
+  if (value <= MOCK_PRESSURE.coldEnter) return "cold";
+  if (value >= MOCK_PRESSURE.hotEnter) return "hot";
+  return "calm";
 }
 
 function filterLocalChant(text: string): string | null {

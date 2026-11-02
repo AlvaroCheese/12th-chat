@@ -2,6 +2,8 @@ import type { Side } from "./sides.js";
 
 export { SIDES } from "./sides.js";
 export type { Side } from "./sides.js";
+export { PRESSURE_CONFIG } from "./pressureConfig.js";
+export type { PressureConfig } from "./pressureConfig.js";
 
 export interface Fan {
   userId: string;
@@ -40,6 +42,14 @@ export interface StandState {
   leftIds: string[];
   singing: Record<Side, SingingState | null>;
   scoreBySide: Record<Side, number>;
+  pressure: Record<Side, PressureState>;
+}
+
+export type PressureMood = "cold" | "calm" | "hot";
+
+export interface PressureState {
+  value: number;
+  mood: PressureMood;
 }
 
 export interface SingingState {
